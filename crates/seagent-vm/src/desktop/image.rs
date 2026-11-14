@@ -243,24 +243,29 @@ fn chunk_map(part: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// `(total size, bytes/s)` from a short Range request, `None` when `url` cannot serve ranges.
+/// `(total size, bytes/s)` from a short Range request, or why `url` cannot serve ranges.
 /// The speed is read for at most a few seconds (a slow mirror is still a usable mirror: it
 /// adds connections, and the work queue gives it only what it can carry).
-fn probe_range(url: &str) -> Option<(u64, f64)> {
+fn probe_range(url: &str) -> Result<(u64, f64), String> {
     const PROBE: u64 = 256 << 10;
     let t0 = Instant::now();
-    let resp = seagent_net::http::agent_for(Duration::from_secs(8), Duration::from_secs(6), url).get(url).header("Range", format!("bytes=0-{}", PROBE - 1)).call().ok()?;
+    let resp = seagent_net::http::agent_for(Duration::from_secs(25), Duration::from_secs(12), url).get(url).header("Range", format!("bytes=0-{}", PROBE - 1)).call().map_err(|e| e.to_string())?;
     if resp.status().as_u16() != 206 {
-        return None;
+        return Err(format!("HTTP {} to a Range request", resp.status().as_u16()));
     }
-    let total = resp.headers().get("content-range").and_then(|v| v.to_str().ok()).and_then(|r| r.rsplit('/').next()).and_then(|t| t.trim().parse::<u64>().ok())?;
+    let total = resp.headers().get("content-range").and_then(|v| v.to_str().ok()).and_then(|r| r.rsplit('/').next()).and_then(|t| t.trim().parse::<u64>().ok()).ok_or("no total size in Content-Range")?;
     let mut r = resp.into_body().into_reader().take(PROBE);
     let (mut n, mut buf) = (0u64, [0u8; 16 << 10]);
     // A read cut off by the timeout still measured the speed.
     while let Ok(k @ 1..) = r.read(&mut buf) {
         n += k as u64;
     }
-    Some((total, n as f64 / t0.elapsed().as_secs_f64().max(1e-3)))
+    Ok((total, n as f64 / t0.elapsed().as_secs_f64().max(1e-3)))
+}
+
+/// [`probe_range`] with one retry (the first TLS handshake to a far mirror can miss a deadline).
+fn probe_twice(url: &str) -> Result<(u64, f64), String> {
+    probe_range(url).or_else(|_| probe_range(url))
 }
 
 /// Download the base image: in parallel segments from every source that serves ranges (a slow
@@ -268,16 +273,23 @@ fn probe_range(url: &str) -> Option<(u64, f64)> {
 /// sequentially from `url` with resume.
 fn fetch_base(url: &str, part: &Path, log: &mut dyn FnMut(&str)) -> Result<(), String> {
     let srcs = image_sources(url);
-    let probed: Vec<(String, Option<(u64, f64)>)> = std::thread::scope(|sc| {
-        let hs: Vec<_> = srcs.iter().map(|u| sc.spawn(move || (u.clone(), probe_range(u)))).collect();
+    type Probe = Result<(u64, f64), String>;
+    let probed: Vec<(String, Probe)> = std::thread::scope(|sc| {
+        let hs: Vec<_> = srcs.iter().map(|u| sc.spawn(move || (u.clone(), probe_twice(u)))).collect();
         hs.into_iter().filter_map(|h| h.join().ok()).collect()
     });
+    for (u, p) in &probed {
+        if let Err(e) = p {
+            log(&format!("  source {}: {e}", u.split('/').nth(2).unwrap_or(u)));
+        }
+    }
     // The size the first answering source reports; a source disagreeing serves something else.
-    let total = probed.iter().find_map(|(_, p)| p.map(|(t, _)| t));
+    let total = probed.iter().find_map(|(_, p)| p.as_ref().ok().map(|(t, _)| *t));
     let Some(total) = total else {
+        log("no source serves byte ranges: downloading in one connection");
         return download_resumable(url, part, log);
     };
-    let mut ok: Vec<(String, f64)> = probed.into_iter().filter_map(|(u, p)| p.filter(|(t, _)| *t == total).map(|(_, b)| (u, b))).collect();
+    let mut ok: Vec<(String, f64)> = probed.into_iter().filter_map(|(u, p)| p.ok().filter(|(t, _)| *t == total).map(|(_, b)| (u, b))).collect();
     ok.sort_by(|a, b| b.1.total_cmp(&a.1));
     let names: Vec<String> = ok.iter().map(|(u, b)| format!("{} {:.0} KB/s", u.split('/').nth(2).unwrap_or(u), b / 1e3)).collect();
     log(&format!("downloading {} ({} MiB) from {} source(s) in parallel: {}", base_name(url), total >> 20, ok.len(), names.join(", ")));
@@ -697,10 +709,11 @@ mod tests {
         assert!(!chunk_map(&part).exists());
         // Only dead sources: an error, and the map stays for the next attempt.
         std::fs::remove_file(&part).unwrap();
-        let e = download_segmented(&[dead], body.len() as u64, &part, &mut |_| {}).unwrap_err();
+        let e = download_segmented(std::slice::from_ref(&dead), body.len() as u64, &part, &mut |_| {}).unwrap_err();
         assert!(e.contains("every source failed"), "{e}");
         assert!(chunk_map(&part).exists());
-        assert_eq!(probe_range(&good).map(|(t, _)| t), Some(body.len() as u64));
+        assert_eq!(probe_range(&good).map(|(t, _)| t), Ok(body.len() as u64));
+        assert!(probe_range(&dead).is_err());
     }
 
     #[test]
