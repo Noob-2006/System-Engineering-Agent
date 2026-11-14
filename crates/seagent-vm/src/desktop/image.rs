@@ -243,17 +243,24 @@ fn chunk_map(part: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// `(total size, bytes/s)` from a 1 MiB Range request, `None` when `url` cannot serve ranges.
+/// `(total size, bytes/s)` from a short Range request, `None` when `url` cannot serve ranges.
+/// The speed is read for at most a few seconds (a slow mirror is still a usable mirror: it
+/// adds connections, and the work queue gives it only what it can carry).
 fn probe_range(url: &str) -> Option<(u64, f64)> {
-    const PROBE: u64 = 1 << 20;
+    const PROBE: u64 = 256 << 10;
     let t0 = Instant::now();
-    let resp = seagent_net::http::agent_for(Duration::from_secs(20), Duration::from_secs(8), url).get(url).header("Range", format!("bytes=0-{}", PROBE - 1)).call().ok()?;
+    let resp = seagent_net::http::agent_for(Duration::from_secs(8), Duration::from_secs(6), url).get(url).header("Range", format!("bytes=0-{}", PROBE - 1)).call().ok()?;
     if resp.status().as_u16() != 206 {
         return None;
     }
     let total = resp.headers().get("content-range").and_then(|v| v.to_str().ok()).and_then(|r| r.rsplit('/').next()).and_then(|t| t.trim().parse::<u64>().ok())?;
-    let n = std::io::copy(&mut resp.into_body().into_reader().take(PROBE), &mut std::io::sink()).ok()?;
-    (n == PROBE.min(total)).then(|| (total, n as f64 / t0.elapsed().as_secs_f64().max(1e-3)))
+    let mut r = resp.into_body().into_reader().take(PROBE);
+    let (mut n, mut buf) = (0u64, [0u8; 16 << 10]);
+    // A read cut off by the timeout still measured the speed.
+    while let Ok(k @ 1..) = r.read(&mut buf) {
+        n += k as u64;
+    }
+    Some((total, n as f64 / t0.elapsed().as_secs_f64().max(1e-3)))
 }
 
 /// Download the base image: in parallel segments from every source that serves ranges (a slow
