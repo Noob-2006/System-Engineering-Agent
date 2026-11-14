@@ -233,8 +233,12 @@ pub(crate) fn image_sources(url: &str) -> Vec<String> {
 const SEGMENT: u64 = 4 << 20;
 /// Connections per source.
 const PER_SOURCE: usize = 4;
-/// Failed segments in a row after which a source is dropped.
+/// Refusals in a row (an HTTP error status such as 404 or 429) after which a source is dropped.
 const SOURCE_FAILS: u32 = 4;
+/// Network errors (DNS, connect, timeout, a dropped connection) do not drop a source: a Wi-Fi
+/// hiccup hits every source at once. The download gives up only when no segment at all has
+/// arrived for this long, and keeps what it has for the next build.
+const STALL: Duration = Duration::from_secs(10 * 60);
 
 /// The completed-segment list kept next to a `.part` (one index per line), for resuming.
 fn chunk_map(part: &Path) -> PathBuf {
@@ -286,6 +290,11 @@ fn fetch_base(url: &str, part: &Path, log: &mut dyn FnMut(&str)) -> Result<(), S
     // The size the first answering source reports; a source disagreeing serves something else.
     let total = probed.iter().find_map(|(_, p)| p.as_ref().ok().map(|(t, _)| *t));
     let Some(total) = total else {
+        // A segmented download in progress is a full-size file with holes: never hand it to the
+        // sequential download, which would take its length for progress.
+        if chunk_map(part).exists() {
+            return Err(format!("download {}: no source answered (is the network up?); the segments already downloaded are kept for the next build", base_name(url)));
+        }
         log("no source serves byte ranges: downloading in one connection");
         return download_resumable(url, part, log);
     };
@@ -330,15 +339,18 @@ pub(crate) fn download_segmented(srcs: &[String], total: u64, part: &Path, log: 
     let map_f = Mutex::new(std::fs::OpenOptions::new().append(true).open(&map).map_err(|e| format!("open {}: {e}", map.display()))?);
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     let seg = |i: usize| (i as u64 * SEGMENT, ((i as u64 + 1) * SEGMENT).min(total));
+    let t0 = Instant::now();
+    // Milliseconds after `t0` of the last segment any worker completed.
+    let progress = std::sync::atomic::AtomicU64::new(0);
     std::thread::scope(|sc| {
         for src in srcs {
             for _ in 0..PER_SOURCE {
-                let (tx, queue, left, map_f, seg) = (tx.clone(), &queue, &left, &map_f, &seg);
+                let (tx, queue, left, map_f, seg, progress) = (tx.clone(), &queue, &left, &map_f, &seg, &progress);
                 sc.spawn(move || {
                     let host = src.split('/').nth(2).unwrap_or(src).to_string();
                     let agent = seagent_net::http::agent_for(Duration::from_secs(300), Duration::from_secs(15), src);
                     let Ok(mut out) = std::fs::OpenOptions::new().write(true).open(part) else { return };
-                    let mut fails = 0u32;
+                    let (mut fails, mut net_fails) = (0u32, 0u32);
                     while fails < SOURCE_FAILS {
                         // An empty queue with segments left means another worker holds them: it
                         // finishes them or, failing, puts them back for whoever is still alive.
@@ -365,16 +377,31 @@ pub(crate) fn download_segmented(srcs: &[String], total: u64, part: &Path, log: 
                         let wrote = got.and_then(|buf| out.seek(SeekFrom::Start(a)).and_then(|_| out.write_all(&buf)).map_err(|e| format!("write {}: {e}", part.display())));
                         match wrote {
                             Ok(()) => {
-                                fails = 0;
+                                (fails, net_fails) = (0, 0);
+                                progress.store(t0.elapsed().as_millis() as u64, Ordering::SeqCst);
                                 let _ = writeln!(map_f.lock().unwrap(), "{i}");
                                 let rest = left.fetch_sub(1, Ordering::SeqCst) - 1;
                                 let _ = tx.send(format!("+{rest}"));
                             }
-                            Err(e) => {
+                            Err(e) if e.starts_with("HTTP ") => {
                                 fails += 1;
                                 queue.lock().unwrap().push_back(i);
                                 let _ = tx.send(format!("  {host}: segment {i}: {e}{}", if fails >= SOURCE_FAILS { " (dropping this source)" } else { "" }));
                                 std::thread::sleep(Duration::from_millis(250 << fails.min(4)));
+                            }
+                            Err(e) => {
+                                net_fails += 1;
+                                queue.lock().unwrap().push_back(i);
+                                let idle = t0.elapsed().saturating_sub(Duration::from_millis(progress.load(Ordering::SeqCst)));
+                                if idle >= STALL {
+                                    let _ = tx.send(format!("  {host}: {e}; nothing arrived for {} min, stopping", STALL.as_secs() / 60));
+                                    break;
+                                }
+                                // 1, 2, 4, 8… in a row: enough to see an outage without a line per retry.
+                                if net_fails.is_power_of_two() {
+                                    let _ = tx.send(format!("  {host}: segment {i}: {e} (retrying)"));
+                                }
+                                std::thread::sleep(Duration::from_millis((250u64 << net_fails.min(7)).min(30_000)));
                             }
                         }
                     }
@@ -713,6 +740,12 @@ mod tests {
         assert!(e.contains("every source failed"), "{e}");
         assert!(chunk_map(&part).exists());
         assert_eq!(probe_range(&good).map(|(t, _)| t), Ok(body.len() as u64));
+        // No source answers now (network down) while segments are on disk: an error that keeps
+        // them, not a sequential download misreading the full-size file as progress.
+        let closed = { let l = TcpListener::bind("127.0.0.1:0").unwrap(); format!("http://127.0.0.1:{}/img.qcow2", l.local_addr().unwrap().port()) };
+        let e = fetch_base(&closed, &part, &mut |_| {}).unwrap_err();
+        assert!(e.contains("kept for the next build"), "{e}");
+        assert!(chunk_map(&part).exists() && part.exists());
         assert!(probe_range(&dead).is_err());
     }
 
