@@ -451,6 +451,62 @@ fn copy_logged(src: &mut dyn Read, out: &mut std::fs::File, start: u64, log: &mu
     }
 }
 
+/// PR_SET_PDEATHSIG for the provisioning VM on Linux / Android (the build runs on the
+/// supervisor's long-lived thread, which is what the signal is tied to). No-op elsewhere.
+fn die_with_parent(cmd: &mut std::process::Command) {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        use std::os::unix::process::CommandExt;
+        let parent = std::process::id() as libc::pid_t;
+        // SAFETY: only async-signal-safe libc calls between fork and exec.
+        unsafe {
+            cmd.pre_exec(move || {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong);
+                if libc::getppid() != parent {
+                    libc::_exit(137);
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let _ = cmd;
+}
+
+/// A provisioning VM of this recipe left running by a seagent that stopped mid-build (an older
+/// version, or macOS, where nothing ties it to us): it would keep the build's console log and
+/// disk open. Found by the `-name` in its command line and ended.
+fn end_leftover_build(recipe: &str, log: &mut dyn FnMut(&str)) {
+    let name = format!("seagent-desktop-build-{recipe}");
+    for pid in leftover_pids(&name) {
+        log(&format!("ending a provisioning VM left running by an earlier build (pid {pid})"));
+        kill_pid(pid);
+    }
+}
+
+#[cfg(windows)]
+fn leftover_pids(name: &str) -> Vec<u32> {
+    // CIM has the command line; tasklist does not.
+    let q = format!("Get-CimInstance Win32_Process -Filter \"Name like 'qemu-system-%'\" | Where-Object {{ $_.CommandLine -like '*{name}*' }} | ForEach-Object {{ $_.ProcessId }}");
+    crate::host::command("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &q]).stdin(Stdio::null()).output().map(|o| String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| l.trim().parse().ok()).collect()).unwrap_or_default()
+}
+
+#[cfg(not(windows))]
+fn leftover_pids(name: &str) -> Vec<u32> {
+    crate::host::command("pgrep").args(["-f", "--", &format!("-name {name}")]).stdin(Stdio::null()).output().map(|o| String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| l.trim().parse().ok()).filter(|&p| p != std::process::id()).collect()).unwrap_or_default()
+}
+
+fn kill_pid(pid: u32) {
+    #[cfg(windows)]
+    let _ = crate::host::command("taskkill").args(["/F", "/T", "/PID", &pid.to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    #[cfg(not(windows))]
+    // SAFETY: plain signal to a pid we just matched.
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
+    std::thread::sleep(Duration::from_millis(500));
+}
+
 /// A one-shot NoCloud seed server on 127.0.0.1 (the guest reaches it as 10.0.2.2).
 pub struct SeedServer {
     pub port: u16,
@@ -577,6 +633,7 @@ pub fn build(vms: &DesktopVms, force: bool, log: &mut dyn FnMut(&str)) -> Result
         log(&format!("warning: {w}"));
     }
     let console = work.join("console.log");
+    end_leftover_build(&recipe(cfg), log);
     let args: Vec<String> = vec![
         "-name".into(),
         format!("seagent-desktop-build-{}", recipe(cfg)),
@@ -607,7 +664,16 @@ pub fn build(vms: &DesktopVms, force: bool, log: &mut dyn FnMut(&str)) -> Result
         "-no-reboot".into(),
     ];
     log(&format!("provisioning the desktop in a {accel} VM (Xfce, LightDM auto-login, Chromium; this takes a few minutes) …"));
-    let mut child = crate::host::command(&qemu).args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| format!("start {}: {e}", qemu.display()))?;
+    let mut cmd = crate::host::command(&qemu);
+    cmd.args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+    die_with_parent(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| format!("start {}: {e}", qemu.display()))?;
+    // Unlike the desktop VMs (daemonized, meant to outlive the daemon), the provisioning VM is
+    // this build's child: if seagent stops mid-build it must stop too, not keep provisioning in
+    // the background and hold the console log the next build opens. Windows: a kill-on-close
+    // Job Object; Linux: PDEATHSIG (above). macOS has neither; the next build finds the
+    // leftover by its `-name` and ends it ([`end_leftover_build`]).
+    let _job = crate::host::VmmJob::confine(&child, cfg.memory_mb.max(2048), cfg.cpus.max(2)).map_err(|e| log(&format!("warning: {e}"))).ok();
     let t0 = Instant::now();
     let limit = Duration::from_secs(cfg.build_timeout_secs.max(60));
     let mut last_note = Instant::now();
@@ -669,6 +735,23 @@ pub fn build(vms: &DesktopVms, force: bool, log: &mut dyn FnMut(&str)) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_leftover_provisioning_vm_of_this_recipe_is_ended() {
+        // `sh -c 'exec -a …'` is not portable; a sleep whose argv carries the name is enough.
+        let name = format!("t{}", std::process::id());
+        let mut c = std::process::Command::new("sh").args(["-c", "sleep 30; true", "-name", &format!("seagent-desktop-build-{name}")]).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let mut lines = vec![];
+        end_leftover_build(&name, &mut |l| lines.push(l.to_string()));
+        assert!(lines.iter().any(|l| l.contains(&format!("pid {}", c.id()))), "{lines:?}");
+        let st = c.wait().unwrap();
+        assert!(!st.success());
+        let mut none = vec![];
+        end_leftover_build(&name, &mut |l| none.push(l.to_string()));
+        assert!(none.is_empty(), "{none:?}");
+    }
 
     #[test]
     fn cloud_image_sources_cover_every_mirror_and_others_stay_alone() {
