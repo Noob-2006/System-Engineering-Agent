@@ -128,13 +128,14 @@ pub fn ensure_base(cfg: &DesktopConfig, dir: &Path, log: &mut dyn FnMut(&str)) -
         }
         None => {
             seagent_net::http::ensure_online("desktop VM image download")?;
-            download_resumable(url, &part, log)?;
+            fetch_base(url, &part, log)?;
         }
     }
     let n = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
     let got = seagent_net::crypto::sha256_file_hex(&part).map_err(|e| format!("read {}: {e}", part.display()))?;
     if got != want {
         let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(chunk_map(&part));
         return Err(format!("{url}: sha256 {got} does not match the pinned {want} (refusing to use it)"));
     }
     std::fs::rename(&part, &dst).map_err(|e| e.to_string())?;
@@ -211,6 +212,177 @@ pub(crate) fn download_resumable(url: &str, part: &Path, log: &mut dyn FnMut(&st
         log(&format!("  download interrupted at {} MiB ({err}); retrying in {wait}s", now >> 20));
         std::thread::sleep(Duration::from_secs(wait));
     }
+}
+
+/// Every URL serving the same file as `url`: itself first, then the same path on each of
+/// [`super::config::CLOUD_IMAGE_MIRRORS`] when `url` lives under one of them.
+pub(crate) fn image_sources(url: &str) -> Vec<String> {
+    let mut v = vec![url.to_string()];
+    if let Some(rest) = super::config::CLOUD_IMAGE_MIRRORS.iter().find_map(|m| url.strip_prefix(m)) {
+        for m in super::config::CLOUD_IMAGE_MIRRORS {
+            let u = format!("{m}{rest}");
+            if !v.contains(&u) {
+                v.push(u);
+            }
+        }
+    }
+    v
+}
+
+/// Size of one ranged request of [`download_segmented`].
+const SEGMENT: u64 = 4 << 20;
+/// Connections per source.
+const PER_SOURCE: usize = 4;
+/// Failed segments in a row after which a source is dropped.
+const SOURCE_FAILS: u32 = 4;
+
+/// The completed-segment list kept next to a `.part` (one index per line), for resuming.
+fn chunk_map(part: &Path) -> PathBuf {
+    let mut s = part.as_os_str().to_owned();
+    s.push(".segments");
+    PathBuf::from(s)
+}
+
+/// `(total size, bytes/s)` from a 1 MiB Range request, `None` when `url` cannot serve ranges.
+fn probe_range(url: &str) -> Option<(u64, f64)> {
+    const PROBE: u64 = 1 << 20;
+    let t0 = Instant::now();
+    let resp = seagent_net::http::agent_for(Duration::from_secs(20), Duration::from_secs(8), url).get(url).header("Range", format!("bytes=0-{}", PROBE - 1)).call().ok()?;
+    if resp.status().as_u16() != 206 {
+        return None;
+    }
+    let total = resp.headers().get("content-range").and_then(|v| v.to_str().ok()).and_then(|r| r.rsplit('/').next()).and_then(|t| t.trim().parse::<u64>().ok())?;
+    let n = std::io::copy(&mut resp.into_body().into_reader().take(PROBE), &mut std::io::sink()).ok()?;
+    (n == PROBE.min(total)).then(|| (total, n as f64 / t0.elapsed().as_secs_f64().max(1e-3)))
+}
+
+/// Download the base image: in parallel segments from every source that serves ranges (a slow
+/// mirror or a per-connection cap no longer decides how long the first build takes), else
+/// sequentially from `url` with resume.
+fn fetch_base(url: &str, part: &Path, log: &mut dyn FnMut(&str)) -> Result<(), String> {
+    let srcs = image_sources(url);
+    let probed: Vec<(String, Option<(u64, f64)>)> = std::thread::scope(|sc| {
+        let hs: Vec<_> = srcs.iter().map(|u| sc.spawn(move || (u.clone(), probe_range(u)))).collect();
+        hs.into_iter().filter_map(|h| h.join().ok()).collect()
+    });
+    // The size the first answering source reports; a source disagreeing serves something else.
+    let total = probed.iter().find_map(|(_, p)| p.map(|(t, _)| t));
+    let Some(total) = total else {
+        return download_resumable(url, part, log);
+    };
+    let mut ok: Vec<(String, f64)> = probed.into_iter().filter_map(|(u, p)| p.filter(|(t, _)| *t == total).map(|(_, b)| (u, b))).collect();
+    ok.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let names: Vec<String> = ok.iter().map(|(u, b)| format!("{} {:.0} KB/s", u.split('/').nth(2).unwrap_or(u), b / 1e3)).collect();
+    log(&format!("downloading {} ({} MiB) from {} source(s) in parallel: {}", base_name(url), total >> 20, ok.len(), names.join(", ")));
+    let urls: Vec<String> = ok.into_iter().map(|(u, _)| u).collect();
+    download_segmented(&urls, total, part, log)
+}
+
+/// Fetch `total` bytes into `part` as [`SEGMENT`]-sized ranges, [`PER_SOURCE`] connections per
+/// source, each worker taking the next missing segment (fast sources end up doing most of
+/// them). Completed segments are recorded in [`chunk_map`], so an interrupted build continues
+/// where it stopped; a `.part` written by the sequential download counts as its prefix.
+pub(crate) fn download_segmented(srcs: &[String], total: u64, part: &Path, log: &mut dyn FnMut(&str)) -> Result<(), String> {
+    use std::collections::VecDeque;
+    use std::io::{Seek, SeekFrom};
+    use std::sync::Mutex;
+    let n = total.div_ceil(SEGMENT) as usize;
+    let map = chunk_map(part);
+    let mut done = vec![false; n];
+    match std::fs::read_to_string(&map) {
+        Ok(t) => t.lines().filter_map(|l| l.trim().parse::<usize>().ok()).filter(|&i| i < n).for_each(|i| done[i] = true),
+        Err(_) => {
+            let have = std::fs::metadata(part).map(|m| m.len()).unwrap_or(0).min(total);
+            let full = if have == total { n } else { (have / SEGMENT) as usize };
+            done.iter_mut().take(full).for_each(|d| *d = true);
+        }
+    }
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(part).map_err(|e| format!("open {}: {e}", part.display()))?;
+    f.set_len(total).map_err(|e| format!("size {}: {e}", part.display()))?;
+    drop(f);
+    let listed: String = done.iter().enumerate().filter(|(_, d)| **d).map(|(i, _)| format!("{i}\n")).collect();
+    std::fs::write(&map, listed).map_err(|e| format!("write {}: {e}", map.display()))?;
+    let have = done.iter().filter(|d| **d).count();
+    if have > 0 {
+        log(&format!("resuming at {} of {n} segments", have));
+    }
+    let queue: Mutex<VecDeque<usize>> = Mutex::new((0..n).filter(|&i| !done[i]).collect());
+    let left = std::sync::atomic::AtomicUsize::new(n - have);
+    let map_f = Mutex::new(std::fs::OpenOptions::new().append(true).open(&map).map_err(|e| format!("open {}: {e}", map.display()))?);
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let seg = |i: usize| (i as u64 * SEGMENT, ((i as u64 + 1) * SEGMENT).min(total));
+    std::thread::scope(|sc| {
+        for src in srcs {
+            for _ in 0..PER_SOURCE {
+                let (tx, queue, left, map_f, seg) = (tx.clone(), &queue, &left, &map_f, &seg);
+                sc.spawn(move || {
+                    let host = src.split('/').nth(2).unwrap_or(src).to_string();
+                    let agent = seagent_net::http::agent_for(Duration::from_secs(300), Duration::from_secs(15), src);
+                    let Ok(mut out) = std::fs::OpenOptions::new().write(true).open(part) else { return };
+                    let mut fails = 0u32;
+                    while fails < SOURCE_FAILS {
+                        // An empty queue with segments left means another worker holds them: it
+                        // finishes them or, failing, puts them back for whoever is still alive.
+                        let next = queue.lock().unwrap().pop_front();
+                        let Some(i) = next else {
+                            if left.load(Ordering::SeqCst) == 0 {
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(100));
+                            continue;
+                        };
+                        let (a, b) = seg(i);
+                        let got = agent.get(src).header("Range", format!("bytes={a}-{}", b - 1)).call().map_err(|e| e.to_string()).and_then(|resp| {
+                            if resp.status().as_u16() != 206 {
+                                return Err(format!("HTTP {}", resp.status().as_u16()));
+                            }
+                            let mut buf = Vec::with_capacity((b - a) as usize);
+                            resp.into_body().into_reader().take(b - a).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+                            if buf.len() as u64 != b - a {
+                                return Err(format!("short segment ({} of {} bytes)", buf.len(), b - a));
+                            }
+                            Ok(buf)
+                        });
+                        let wrote = got.and_then(|buf| out.seek(SeekFrom::Start(a)).and_then(|_| out.write_all(&buf)).map_err(|e| format!("write {}: {e}", part.display())));
+                        match wrote {
+                            Ok(()) => {
+                                fails = 0;
+                                let _ = writeln!(map_f.lock().unwrap(), "{i}");
+                                let rest = left.fetch_sub(1, Ordering::SeqCst) - 1;
+                                let _ = tx.send(format!("+{rest}"));
+                            }
+                            Err(e) => {
+                                fails += 1;
+                                queue.lock().unwrap().push_back(i);
+                                let _ = tx.send(format!("  {host}: segment {i}: {e}{}", if fails >= SOURCE_FAILS { " (dropping this source)" } else { "" }));
+                                std::thread::sleep(Duration::from_millis(250 << fails.min(4)));
+                            }
+                        }
+                    }
+                    let _ = out.sync_all();
+                });
+            }
+        }
+        drop(tx);
+        let step = ((64 << 20) / SEGMENT) as usize;
+        let mut next = (n - have).saturating_sub(step);
+        for m in rx {
+            if let Some(rest) = m.strip_prefix('+').and_then(|r| r.parse::<usize>().ok()) {
+                if rest <= next && rest > 0 {
+                    log(&format!("  {} of {} MiB", ((n - rest) as u64 * SEGMENT).min(total) >> 20, total >> 20));
+                    next = rest.saturating_sub(step);
+                }
+            } else {
+                log(&m);
+            }
+        }
+    });
+    let rest = left.load(Ordering::SeqCst);
+    if rest > 0 {
+        return Err(format!("download {}: every source failed with {rest} of {n} segments missing (building again continues from here)", base_name(&srcs[0])));
+    }
+    let _ = std::fs::remove_file(&map);
+    Ok(())
 }
 
 /// Copy `src` to the end of `out` (which already holds `start` bytes), logging every 64 MiB.
@@ -451,6 +623,78 @@ pub fn build(vms: &DesktopVms, force: bool, log: &mut dyn FnMut(&str)) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloud_image_sources_cover_every_mirror_and_others_stay_alone() {
+        let v = image_sources(super::super::config::DEFAULT_IMAGE_URL);
+        assert_eq!(v[0], super::super::config::DEFAULT_IMAGE_URL);
+        assert_eq!(v.len(), super::super::config::CLOUD_IMAGE_MIRRORS.len());
+        assert!(v.iter().all(|u| u.ends_with("/trixie/20261026-2643/debian-13-generic-amd64-20261026-2643.qcow2")), "{v:?}");
+        let m = "https://laotzu.ftp.acc.umu.se/images/cloud/x/y.qcow2";
+        assert_eq!(image_sources(m)[0], m);
+        assert_eq!(image_sources(m).len(), super::super::config::CLOUD_IMAGE_MIRRORS.len());
+        assert_eq!(image_sources("https://example.com/x.qcow2"), vec!["https://example.com/x.qcow2".to_string()]);
+    }
+
+    /// A loopback server answering Range requests from `body`; `broken` answers 404 to all.
+    fn range_server(body: Arc<Vec<u8>>, broken: bool) -> String {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for c in l.incoming() {
+                let Ok(mut c) = c else { continue };
+                let body = body.clone();
+                std::thread::spawn(move || {
+                    let mut req = Vec::new();
+                    let mut b = [0u8; 1024];
+                    while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match c.read(&mut b) {
+                            Ok(0) | Err(_) => return,
+                            Ok(k) => req.extend_from_slice(&b[..k]),
+                        }
+                    }
+                    let r = String::from_utf8_lossy(&req).to_ascii_lowercase();
+                    let range = r.lines().find_map(|l| l.strip_prefix("range: bytes=").map(str::to_string));
+                    if broken || range.is_none() {
+                        let _ = c.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        return;
+                    }
+                    let range = range.unwrap();
+                    let (a, z) = range.trim().split_once('-').unwrap();
+                    let a: usize = a.parse().unwrap();
+                    let z: usize = z.parse::<usize>().unwrap().min(body.len() - 1);
+                    let hdr = format!("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {a}-{z}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len(), z - a + 1);
+                    let _ = c.write_all(hdr.as_bytes());
+                    let _ = c.write_all(&body[a..=z]);
+                });
+            }
+        });
+        format!("http://127.0.0.1:{port}/img.qcow2")
+    }
+
+    #[test]
+    fn segmented_download_survives_a_dead_source_and_resumes_from_a_prefix() {
+        let body: Arc<Vec<u8>> = Arc::new((0..(SEGMENT as usize * 3 + 12345)).map(|i| (i * 31 % 251) as u8).collect());
+        let good = range_server(body.clone(), false);
+        let dead = range_server(body.clone(), true);
+        let dir = seagent_core::tmp::TempDir::new("seagent-segdl");
+        let part = dir.path().join("img.part");
+        // A sequential download left the first segment and a bit behind.
+        std::fs::write(&part, &body[..SEGMENT as usize + 99]).unwrap();
+        let mut lines = vec![];
+        let r = download_segmented(&[dead.clone(), good.clone()], body.len() as u64, &part, &mut |l| lines.push(l.to_string()));
+        assert!(r.is_ok(), "{r:?} {lines:?}");
+        // The dead source took segments first; the good one still fetched every one of them.
+        assert_eq!(std::fs::read(&part).unwrap(), *body, "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("resuming at 1 of 4")), "{lines:?}");
+        assert!(!chunk_map(&part).exists());
+        // Only dead sources: an error, and the map stays for the next attempt.
+        std::fs::remove_file(&part).unwrap();
+        let e = download_segmented(&[dead], body.len() as u64, &part, &mut |_| {}).unwrap_err();
+        assert!(e.contains("every source failed"), "{e}");
+        assert!(chunk_map(&part).exists());
+        assert_eq!(probe_range(&good).map(|(t, _)| t), Some(body.len() as u64));
+    }
 
     #[test]
     fn the_guest_browser_offers_devtools_through_the_relay_only() {

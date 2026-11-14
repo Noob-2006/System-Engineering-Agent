@@ -31,6 +31,17 @@ use serde::{Deserialize, Serialize};
 
 /// Debian 13 (trixie) "generic" cloud image (cloud-init, full kernel with DRM/USB HID), pinned.
 pub const DEFAULT_IMAGE_URL: &str = "https://cloud.debian.org/images/cloud/trixie/20261026-2643/debian-13-generic-amd64-20261026-2643.qcow2";
+/// Hosts carrying the same `images/cloud/` tree as cloud.debian.org (its redirector picks one of
+/// the umu.se hosts at random; from Asia a single connection to them can crawl at ~50 KB/s).
+/// An `image_url` under any of these is fetched from all of them at once; the pinned sha256
+/// decides what is accepted, so a mirror can slow the download down but never change it.
+pub const CLOUD_IMAGE_MIRRORS: &[&str] = &[
+    "https://cloud.debian.org/images/cloud/",
+    "https://chuangtzu.ftp.acc.umu.se/images/cloud/",
+    "https://laotzu.ftp.acc.umu.se/images/cloud/",
+    "https://saimei.ftp.acc.umu.se/images/cloud/",
+    "https://mirrors.ustc.edu.cn/debian-cdimage/cloud/",
+];
 /// sha256 of [`DEFAULT_IMAGE_URL`] (Debian publishes SHA512SUMS; this was checked against it).
 pub const DEFAULT_IMAGE_SHA256: &str = "7740a80114c1b5e6456c65713c76f4006e8b00eb50d8a122924ba823b9959fc5";
 
