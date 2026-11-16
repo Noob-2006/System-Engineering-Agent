@@ -20,7 +20,7 @@
 **Q：支援 Windows／macOS／手機嗎？**
 支援，從 0.2.0-alpha 起都是原生版本：Windows `setup.exe`／`.msi`、macOS `.dmg`、Linux `.AppImage`／`.deb`／`.rpm`、Android `.apk`、iOS App，點兩下就裝好，內建 VM 也包在安裝檔裡。各平台驗證到什麼程度見 README 的「平台狀態」，安裝步驟見 [install.md §0](install.md#0-選擇平台與安裝檔)。
 
-**Q：0.2.0-alpha 的「alpha」是什麼意思？可以拿來正式使用嗎？**
+**Q：0.2.x-alpha 的「alpha」是什麼意思？可以拿來正式使用嗎？**
 功能已經齊全、可以每天用，但 1.0 之前設定鍵、指令名稱與主控台還可能調整，安裝檔也還沒有程式碼簽章。重要的工作請先備份（`seagent data export`），升級前看 [CHANGELOG.md](../CHANGELOG.md)。
 
 **Q：它參考了哪些專案？是誰寫的？**
@@ -48,7 +48,7 @@
 App：直接安裝新版的安裝檔（Windows `setup.exe`／`.msi`、macOS 拖進「應用程式」取代、Linux 換新的 AppImage 或裝新的 deb／rpm、Android 裝新的 apk）。CLI：重跑安裝指令；或 `seagent update`；套件安裝的就用套件管理員（`apt upgrade`、`dnf upgrade`、`pacman -Syu`、`apk upgrade`）。設定與資料不受影響。從 0.1.0 升級要注意的事、各方式的對照表見 [install.md §10](install.md#10-版本與升級)。
 
 **Q：怎麼裝指定版本（例如 alpha）？**
-到 Releases 下載該版本的安裝檔；或 `install.sh` 加 `--version v0.2.0-alpha`。不指定時安裝腳本只會裝最新的正式版。
+到 Releases 下載該版本的安裝檔；或 `install.sh` 加 `--version v0.2.1-alpha`。不指定時安裝最新的 Release。
 
 **Q：怎麼解除安裝？資料會留下嗎？**
 預設會留下設定、工作階段與稽核紀錄（它們可能是證據）。要完全清除見 [install.md §7](install.md#7-解除安裝)。

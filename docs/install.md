@@ -1,6 +1,6 @@
 # 安裝 SE Agent
 
-SE Agent（System Engineering Agent，指令 `seagent`）是一個代理程式（`seagent`，Linux 上是 musl 靜態連結的單一執行檔），加上一包技能、角色與範本資料。桌機和手機另有圖形 App 把它包起來。本文件說明每一個平台、每一種安裝方式，以及裝不起來時要看什麼。目前版本：**0.2.0-alpha**。
+SE Agent（System Engineering Agent，指令 `seagent`）是一個代理程式（`seagent`，Linux 上是 musl 靜態連結的單一執行檔），加上一包技能、角色與範本資料。桌機和手機另有圖形 App 把它包起來。本文件說明每一個平台、每一種安裝方式，以及裝不起來時要看什麼。目前版本：**0.2.1-alpha**。
 
 > 桌機、筆電、手機：看 [§0 選擇平台與安裝檔](#0-選擇平台與安裝檔)，點兩下就裝好。Linux 伺服器：跳到 [§2 一個指令安裝](#2-一個指令安裝)。裝不起來：跳到 [§9 疑難排解](#9-疑難排解)，每一列都是「看到什麼 → 為什麼 → 怎麼做」。升級：[§10](#10-版本與升級)。
 > 常見問題（帳號、費用、資料放哪、隱私）另見 [faq.md](faq.md)。
@@ -20,11 +20,11 @@ SE Agent（System Engineering Agent，指令 `seagent`）是一個代理程式�
 | Android | Android 8.0+（API 26），arm64 | `SE-Agent_android-arm64_*.apk` | 見 [§0.4](#04-android) |
 | iOS／iPadOS | — | TestFlight／App Store（尚未上架） | 見 [§0.5](#05-ios) |
 
-> **0.2.0-alpha 的安裝檔都還沒有程式碼簽章。** Windows 會出現 SmartScreen、macOS 會出現 Gatekeeper 警告，下面各節寫了怎麼確認檔案沒被改過、怎麼放行。請只從 Releases 頁面下載，並先比對 `SHA256SUMS`。
+> **0.2.x-alpha 的安裝檔都還沒有程式碼簽章。** Windows 會出現 SmartScreen、macOS 會出現 Gatekeeper 警告，下面各節寫了怎麼確認檔案沒被改過、怎麼放行。請只從 Releases 頁面下載，並先比對校驗碼：桌機與手機 App 在 `SHA256SUMS-app.txt`，Linux 命令列套件在 `SHA256SUMS`。
 
 ### 0.1 Windows
 
-1. 下載 `SE Agent_<版本>_x64-setup.exe` 和 `SHA256SUMS`，在 PowerShell 比對：`Get-FileHash '.\SE Agent_0.2.0-alpha_x64-setup.exe'`，結果要和 `SHA256SUMS` 裡同名那一行相同。
+1. 下載 `SE Agent_<版本>_x64-setup.exe` 和 `SHA256SUMS-app.txt`，在 PowerShell 比對：`Get-FileHash '.\SE Agent_0.2.1-alpha_x64-setup.exe'`，結果要和 `SHA256SUMS-app.txt` 裡同名那一行相同。
 2. 點兩下安裝。SmartScreen 顯示「Windows 已保護您的電腦」時，按「其他資訊 → 仍要執行」。安裝程式可選英文、繁體中文、簡體中文。
 3. `setup.exe` 是**個人安裝**：裝在 `%LOCALAPPDATA%\SE Agent`，不需要系統管理員。安裝過程會詢問是否安裝**虛擬顯示器驅動**（在你螢幕外側加一台虛擬螢幕，代理的 Bot Desktop 因此能以 30–60 fps 串流，否則約 10 fps；你自己的螢幕不變）。這一步會跳一次 UAC，需要系統管理員同意，可以略過；升級時不會再問。
 4. `.msi` 適合 IT 用群組原則或 Intune 集中部署（需要系統管理員），三種語言各一個檔，內容相同。
@@ -36,14 +36,14 @@ SE Agent（System Engineering Agent，指令 `seagent`）是一個代理程式�
 
 ### 0.2 macOS
 
-1. 下載 `.dmg`（universal，Apple Silicon 與 Intel 都用同一個），用 `shasum -a 256 SE*.dmg` 比對 `SHA256SUMS`。
+1. 下載 `.dmg`（universal，Apple Silicon 與 Intel 都用同一個），用 `shasum -a 256 SE*.dmg` 比對 `SHA256SUMS-app.txt`。
 2. 打開 `.dmg`，把 SE Agent 拖進「應用程式」。
 3. 第一次開啟：在「應用程式」裡對 SE Agent 按右鍵 →「打開」→「打開」（未公證的 App 只能這樣放行）。macOS 15 以後改到「系統設定 → 隱私權與安全性」最下方按「強制打開」。
 4. 背景服務以 LaunchAgent 執行（`~/Library/LaunchAgents/ai.seagent.seagentd.plist`）。
 
 內建 VM：microVM 用安裝包附的 vfkit（Virtualization.framework）。桌面 VM 需要 QEMU：`brew install qemu`（或 MacPorts `sudo port install qemu`）；App 會到 `/opt/homebrew/bin`、`/usr/local/bin`、`/opt/local/bin` 找，不必改 PATH。Apple Silicon 上桌面 VM（x86_64 映像）走軟體模擬，比較慢。
 
-> GitHub Actions 每次推送都會在 macOS 機器上產出 universal `.dmg`（[Actions → desktop](https://github.com/Noob-2006/System-Engineering-Agent/actions/workflows/desktop.yml) 的 `seagent-app-universal-apple-darwin`，要登入 GitHub 才能下載）；打上 `v*` 標籤後會放上 Releases。還沒在實體 Mac 上操作過，也還沒用 Apple 開發者憑證簽章與公證。也可以從原始碼建置（[apps/desktop/README.md](../apps/desktop/README.md)）。
+> `.dmg` 由 GitHub Actions 的 macOS 機器建置，放在 Releases。還沒在實體 Mac 上操作過，也還沒用 Apple 開發者憑證簽章與公證。也可以從原始碼建置（[apps/desktop/README.md](../apps/desktop/README.md)）。
 
 ### 0.3 Linux 桌面
 
@@ -51,7 +51,7 @@ SE Agent（System Engineering Agent，指令 `seagent`）是一個代理程式�
 |---|---|
 | 任何發行版（AppImage） | `chmod +x SE-Agent_*_amd64.AppImage && ./SE-Agent_*_amd64.AppImage` |
 | Debian／Ubuntu／Mint | `sudo apt install ./SE-Agent_<版本>_amd64.deb` |
-| Fedora／RHEL／openSUSE | `sudo dnf install ./SE-Agent-0.2.0-0.1.alpha.x86_64.rpm`（RPM 不接受版本裡的 `-`，預發布標記放在 Release：`0.2.0-alpha` 寫成 `0.2.0-0.1.alpha`，正式版是 `0.2.0-1`） |
+| Fedora／RHEL／openSUSE | `sudo dnf install ./SE-Agent-0.2.1-0.1.alpha.x86_64.rpm`（RPM 不接受版本裡的 `-`，預發布標記放在 Release：`0.2.0-alpha` 寫成 `0.2.0-0.1.alpha`，正式版是 `0.2.0-1`） |
 
 App 會用 systemd 使用者服務跑背景程式。deb／rpm 會一併「建議安裝」QEMU（`qemu-system-x86`、`qemu-utils`／`qemu-img`）給桌面 VM 用；AppImage 請自己裝：`sudo apt install qemu-system-x86 qemu-utils`（Fedora `sudo dnf install qemu-system-x86 qemu-img`，Arch `sudo pacman -S qemu-desktop`）。要硬體加速，把自己加進 `kvm` 群組：`sudo usermod -aG kvm $USER` 後重新登入。microVM 用安裝包附的 Firecracker。
 
@@ -122,7 +122,7 @@ curl --proto '=https' --tlsv1.2 -fsSL https://github.com/Noob-2006/System-Engine
 |---|---|
 | `--user`（預設）／`--system` | 個人安裝／系統服務 |
 | `--port N` | 網頁主控台埠號（只綁 127.0.0.1，預設 8640） |
-| `--version vX.Y.Z` | 指定版本（預設最新的正式版；alpha／beta 要明確指定，例如 `--version v0.2.0-alpha`） |
+| `--version vX.Y.Z` | 指定版本（預設最新的 Release；例如 `--version v0.2.1-alpha`） |
 | `--no-start` | 只安裝，不設定、不啟動 |
 | `--no-systemd` | 不用 systemd，改用背景程序 |
 | `--no-browser` | 不自動開瀏覽器 |
@@ -439,11 +439,11 @@ seagent logs -n 100                           # 個人安裝
 | Linux AppImage | 換成新檔案 | 保留 |
 | Linux App `.deb`／`.rpm` | `sudo apt install ./新版.deb`／`sudo dnf upgrade ./新版.rpm` | 保留 |
 | Android | 安裝新版 `.apk`（同簽章才能覆蓋；debug → 正式簽章要先解除安裝） | 同簽章時保留 |
-| 一個指令安裝 | 重跑指令；指定版本加 `--version v0.2.0-alpha` | 保留 |
+| 一個指令安裝 | 重跑指令；指定版本加 `--version v0.2.1-alpha` | 保留 |
 | CLI 套件（deb／rpm／pacman／apk） | 套件管理員升級 | 保留 |
 | npm／Nix | `npm update -g @se-agent/seagent`／`nix profile upgrade` | 保留 |
 
-App 的系統匣「檢查更新」需要發行時設定的更新簽章金鑰：由 CI 簽章發行的版本會到 Releases 的 `latest.json` 找新版，問過你才安裝；本機建置與目前的 0.2.0-alpha 安裝檔沒有這把金鑰，會提示「請到 GitHub Releases 下載新版」，照上表手動升級。
+App 的系統匣「檢查更新」需要發行時設定的更新簽章金鑰：由 CI 簽章發行的版本會到 Releases 的 `latest.json` 找新版，問過你才安裝；本機建置與目前的 0.2.x-alpha 安裝檔沒有這把金鑰，會提示「請到 GitHub Releases 下載新版」，照上表手動升級。
 
 ### 10.3 從 0.1.0 升級到 0.2.0-alpha
 

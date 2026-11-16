@@ -257,7 +257,7 @@ def wait_tool_called(before, secs=30):
 @test
 def help_version_and_usage_errors():
     c, out, _ = seagent("version")
-    check(c == 0 and "seagent 0.2.0-alpha" in out, out)
+    check(c == 0 and "seagent 0.2.1-alpha" in out, out)
     c, out, _ = seagent("help")
     check(c == 0 and "seagent run" in out, "help")
     c, _, err = seagent("frobnicate")

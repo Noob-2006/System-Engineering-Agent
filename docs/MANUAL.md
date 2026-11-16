@@ -18,7 +18,7 @@
 
 ### 1.1 需求
 
-版本 **0.2.0-alpha**。
+版本 **0.2.1-alpha**。
 
 - Windows 10／11 x64、macOS 11+、Linux（x86_64／aarch64，任何發行版）、Android 8+、iOS；單一執行檔，不需要 root、不需要資料庫、不需要 Node。各平台的驗證程度見 README 的「平台狀態」。
 - 需要一個模型供應商的金鑰（或訂閱登入）；程式碼相關工具需要 `git`。VM 功能：Windows 安裝包內附 QEMU（開啟 Windows Hypervisor Platform 才有加速），Linux 需要 `/dev/kvm`，macOS 用 Virtualization.framework（見第 5 節）。

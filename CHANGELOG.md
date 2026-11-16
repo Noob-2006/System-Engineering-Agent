@@ -4,7 +4,59 @@ All notable changes to SE Agent are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/). Security fixes are marked **Security**.
 
-## [0.2.0-alpha] — 2026-11-13
+## [0.2.1-alpha] — 2026-11-16
+
+The first version published on GitHub Releases. The desktop VM becomes the agent's computer by
+default, and the installers for every platform come from CI.
+
+### Added
+- **The agent works inside the desktop VM by default** (`[desktop_vm] autostart = true`): the
+  daemon builds the image on first use, boots the default VM `desk`, restarts it if it dies and
+  leaves it alone after a person stops it. A status pill in the console shows building / booting
+  / running / failed; ARP `view.vm.status` and `view.vm.build`.
+- Shell, process and terminal tools run inside the running desktop VM (`[exec] target = "auto"`):
+  streaming output, exit codes, stdin, kill, PTY; the workspace is mirrored both ways and
+  host-only variables never reach the VM. `host: "vm"` insists, `host: "host"` keeps the old
+  behaviour; sandboxed sessions never land on the desktop. A VM that is not running falls back to
+  the host with a once-per-session note.
+- The microVM guest agent gains a `service` role and runs inside the desktop VM as the desktop
+  user (no capability kept), with the X session for GUI commands.
+- The browser and computer-use tools default to the desktop VM (`[computer_use] target =
+  "vm:desk"`).
+- `computer_use` / `computer` on Windows and macOS use the system accessibility APIs (UI
+  Automation, AX) instead of failing on AT-SPI.
+- Audit-grade export; the console's own polling is coalesced in the audit log (one record per
+  actor / method / subject per 10 minutes, `[audit] log_reads = true` records every call).
+- Releases carry `SHA256SUMS-app.txt` for the desktop and mobile installers, and the release notes
+  come from this file.
+
+### Changed
+- Version 0.2.1-alpha (MSI `0.2.1`, Android `versionCode` 2001).
+- rusqlite 0.41 with bundled SQLite 3.54.1 (**Security**: RUSTSEC-2026-0459, uninitialised
+  page-cache memory with a mismatched `-wal`).
+- CI: a fast `[profile.ci]` for untagged builds (tags keep `[profile.release]`), newer runs cancel
+  older ones, failed tests and builds become annotations readable without signing in.
+
+### Fixed
+- Desktop VM image download crawled at tens of KB/s from one far mirror: it now fetches 4 MiB
+  segments in parallel from cloud.debian.org and the official mirrors that serve the same file
+  (about 10x faster), resumes from the missing segments, and still checks the pinned sha256.
+- A network outage during the image download dropped every source and could restart the file
+  from scratch; network errors now back off and retry until 10 minutes pass without progress,
+  and the downloaded segments are kept for the next build.
+- A provisioning VM left running after SE Agent quit held `console.log`, so the next desktop VM
+  build failed; it now ends with SE Agent (Job Object / `PR_SET_PDEATHSIG`) and leftovers are
+  ended before a build.
+- The in-VM shell never answered on Windows: handing the agent over fw_cfg took minutes under
+  WHPX; it is only handed over when the baked-in one differs.
+- On Windows, `seagent vm desktop start > log` did not return until the VM stopped (QEMU
+  inherited seagent's stdout); `vm desktop status` no longer shows a VNC socket there.
+- macOS microVM (vfkit): vsock direction, a socket path with a space, and a boot-time retry;
+  arm64 guests power off through PSCI instead of rebooting.
+- Ubuntu 23.10+ AppArmor user-namespace restriction: bwrap is detected as unusable and the
+  sandbox falls back to Landlock / docker, naming the reason.
+
+## [0.2.0-alpha] — 2026-11-13 (not published)
 
 First alpha of the cross-platform release: one code base for Windows, macOS, Linux, Android and
 iOS, with double-click installers and a built-in VM. Feature-complete for daily use; config keys,
@@ -66,15 +118,6 @@ Platform status (real-device vs build-only) is in the README.
   keymap file the bundle does not ship).
 - The fastest apt mirror was ignored: Debian cloud images name the archive in
   `/etc/apt/mirrors/debian.list`.
-- Desktop VM image download crawled at tens of KB/s from one far mirror: it now fetches 4 MiB
-  segments in parallel from cloud.debian.org and the official mirrors that serve the same file
-  (about 10x faster), resumes from the missing segments, and still checks the pinned sha256.
-- A network outage during the image download dropped every source and could restart the file
-  from scratch; network errors now back off and retry until 10 minutes pass without progress,
-  and the downloaded segments are kept for the next build.
-- A provisioning VM left running after SE Agent quit held `console.log`, so the next desktop
-  VM build failed; it now ends with SE Agent (Job Object / `PR_SET_PDEATHSIG`) and leftovers
-  are ended before a build.
 - `seagent secrets set` kept a PowerShell BOM as part of the secret.
 - MSI: the driver step and the launch checkbox run; no install over an existing `setup.exe`.
 
