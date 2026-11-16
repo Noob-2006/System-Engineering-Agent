@@ -186,6 +186,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      # repro-check.sh builds offline (CARGO_NET_OFFLINE): fetch the locked crate sources first.
+      - run: cargo fetch --locked
       - run: packaging/release/repro-check.sh
   publish:
     needs: [build, smoke, repro, packages, distro-matrix, repos]
@@ -259,6 +261,16 @@ jobs:
           awk -v h="## [$ver]" 'index($0, h) == 1 { on = 1; next } on && /^## \[/ { exit } on' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
           test -s "$RUNNER_TEMP/notes.md" || echo "SE Agent $GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
           head -20 "$RUNNER_TEMP/notes.md"
-      - run: gh release create "$GITHUB_REF_NAME" dist/* offline/* --verify-tag --title "SE Agent $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md" --repo "$GITHUB_REPOSITORY"
+      - name: publish the release
+        run: |
+          set -euo pipefail
+          title="SE Agent $GITHUB_REF_NAME"
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # desktop.yml creates the release itself when this workflow is late; fill it in.
+            gh release edit "$GITHUB_REF_NAME" --title "$title" --notes-file "$RUNNER_TEMP/notes.md" --repo "$GITHUB_REPOSITORY"
+            gh release upload "$GITHUB_REF_NAME" dist/* offline/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* offline/* --verify-tag --title "$title" --notes-file "$RUNNER_TEMP/notes.md" --repo "$GITHUB_REPOSITORY"
+          fi
         env:
           GH_TOKEN: ${{ github.token }}

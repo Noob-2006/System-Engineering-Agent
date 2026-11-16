@@ -24,13 +24,11 @@ const AUDIT_ARCH: u32 = 0xc000_003e;
 #[cfg(target_arch = "aarch64")]
 const AUDIT_ARCH: u32 = 0xc000_00b7;
 
-/// `kexec_file_load`: the libc crate names it on Linux but not for Android (bionic), where
-/// the kernel has the same number (x86_64 320, aarch64 294).
-#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
-const SYS_KEXEC_FILE_LOAD: i64 = libc::SYS_kexec_file_load;
-#[cfg(all(target_os = "android", target_arch = "x86_64"))]
+/// `kexec_file_load` by the kernel's number: the libc crate leaves it out for Android (bionic)
+/// and for aarch64 musl, while the kernel ABI is the same everywhere (x86_64 320, aarch64 294).
+#[cfg(target_arch = "x86_64")]
 const SYS_KEXEC_FILE_LOAD: i64 = 320;
-#[cfg(all(target_os = "android", target_arch = "aarch64"))]
+#[cfg(target_arch = "aarch64")]
 const SYS_KEXEC_FILE_LOAD: i64 = 294;
 
 /// The refused syscalls on this architecture.
@@ -153,6 +151,13 @@ mod tests {
         let k = |i: usize| u32::from_ne_bytes(p[i * 8 + 4..i * 8 + 8].try_into().unwrap());
         assert_eq!((k(p.len() / 8 - 2), k(p.len() / 8 - 1)), (RET_ALLOW, RET_ERRNO_EPERM));
         assert!(denied().iter().any(|(n, _)| *n == "keyctl") && denied().iter().any(|(n, _)| *n == "unshare"));
+    }
+
+    /// The hard-coded `kexec_file_load` number is the kernel's, checked where libc names it.
+    #[test]
+    #[cfg(all(target_os = "linux", target_env = "gnu", any(target_arch = "x86_64", target_arch = "aarch64")))]
+    fn kexec_file_load_number_matches_libc() {
+        assert_eq!(SYS_KEXEC_FILE_LOAD, libc::SYS_kexec_file_load);
     }
 
     /// The filter really applies under bwrap: `unshare` is refused, ordinary commands run.
