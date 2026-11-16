@@ -43,7 +43,7 @@ SE Agent（System Engineering Agent，指令 `seagent`）是一個代理程式�
 
 內建 VM：microVM 用安裝包附的 vfkit（Virtualization.framework）。桌面 VM 需要 QEMU：`brew install qemu`（或 MacPorts `sudo port install qemu`）；App 會到 `/opt/homebrew/bin`、`/usr/local/bin`、`/opt/local/bin` 找，不必改 PATH。Apple Silicon 上桌面 VM（x86_64 映像）走軟體模擬，比較慢。
 
-> 0.2.0-alpha 的 `.dmg` 要等 macOS CI 與 Apple 開發者憑證就緒才會產出；在那之前請從原始碼建置（[apps/desktop/README.md](../apps/desktop/README.md)）。
+> GitHub Actions 每次推送都會在 macOS 機器上產出 universal `.dmg`（[Actions → desktop](https://github.com/Noob-2006/System-Engineering-Agent/actions/workflows/desktop.yml) 的 `seagent-app-universal-apple-darwin`，要登入 GitHub 才能下載）；打上 `v*` 標籤後會放上 Releases。還沒在實體 Mac 上操作過，也還沒用 Apple 開發者憑證簽章與公證。也可以從原始碼建置（[apps/desktop/README.md](../apps/desktop/README.md)）。
 
 ### 0.3 Linux 桌面
 

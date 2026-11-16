@@ -91,13 +91,17 @@ SE Agent 主要由 AI 程式代理在人類的指揮與審查下寫成：
 |---|---|---|---|---|
 | Windows 10／11 x64 | `SE Agent_0.2.0-alpha_x64-setup.exe`、`.msi`（英／繁中／簡中） | **實機**（Windows 11 Home） | QEMU + WHPX（安裝包內附）；Hyper-V／VirtualBox 備援 | 附虛擬顯示器驅動；未簽章 |
 | Linux x86_64 | `.AppImage`、`.deb`、`.rpm`；CLI 另有 musl 靜態執行檔與 deb／rpm／pacman／apk | **實機**（WSL2 Ubuntu）；原生桌面發行版待測 | Firecracker（內附）；桌面 VM 用系統的 QEMU | 主要開發平台 |
-| macOS 11+（Apple Silicon／Intel） | `.dmg` | 程式碼可編譯；**安裝檔尚未產出**（需要 Mac 的 CI） | vfkit／Virtualization.framework；桌面 VM 用 Homebrew 的 QEMU | 等 CI 與 Apple 憑證 |
+| macOS 11+（Apple Silicon／Intel） | `SE Agent_<版本>_universal.dmg`（Apple Silicon 與 Intel 共用） | **建置**（GitHub Actions 的 macOS 機器每次推送都會產出，並檢查 App 內附 VM）；還沒在實體 Mac 上操作過 | vfkit／Virtualization.framework；桌面 VM 用 Homebrew 的 QEMU | 未簽章、未公證（等 Apple 憑證） |
 | Android 8+（arm64） | `.apk`（目前是 debug 簽章） | **建置** | AVF（支援的機型） | 也能連到區域網路裡的電腦 |
-| iOS／iPadOS | App Store／TestFlight | 程式碼可編譯；**尚未產出**（需要 Mac 的 CI） | 無（平台禁止），改用 WASM 沙盒 | 完整代理在 App 行程內執行 |
+| iOS／iPadOS | App Store／TestFlight（上架後） | **建置**：CI 每次推送產出模擬器版（`SE-Agent_ios-simulator.app.zip`）；實機版要 Apple 憑證才能簽 | 無（平台禁止），改用 WASM 沙盒 | 完整代理在 App 行程內執行 |
 
 ## 安裝
 
-各平台、各版本的完整步驟、升級與疑難排解在 [docs/install.md](docs/install.md)。最短的路：
+各平台、各版本的完整步驟、升級與疑難排解在 [docs/install.md](docs/install.md)。
+
+> **目前還沒發布 Release。** 打上 `v*` 標籤後，安裝檔才會出現在 [Releases](https://github.com/Noob-2006/System-Engineering-Agent/releases)。在那之前，每次推送的安裝檔都在 [Actions → desktop](https://github.com/Noob-2006/System-Engineering-Agent/actions/workflows/desktop.yml) 最新一次執行的 Artifacts 裡（`seagent-app-x86_64-pc-windows-msvc`、`seagent-app-universal-apple-darwin`、`seagent-app-x86_64-unknown-linux-gnu`、`seagent-app-android`、`seagent-app-ios-simulator`），要登入 GitHub 才能下載，保留 90 天。
+
+最短的路：
 
 | 你用的是 | 下載 | 然後 |
 |---|---|---|
