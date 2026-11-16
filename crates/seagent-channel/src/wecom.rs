@@ -1765,7 +1765,7 @@ mod tests {
         assert!(w.stream_frame("amy", None, "Hello", false).unwrap());
         srv.wait_for(CMD_RESPOND, 2);
         assert!(w.stream_frame("amy", None, "Hello", true).unwrap());
-        let f = srv.frames(CMD_RESPOND);
+        let f = srv.wait_for(CMD_RESPOND, 3);
         assert_eq!(f.len(), 3);
         assert_eq!((f[0]["body"]["stream"]["content"].as_str(), f[0]["body"]["stream"]["finish"].as_bool()), (Some(THINKING), Some(false)));
         assert_eq!(f[1]["body"]["stream"]["content"], "Hello");

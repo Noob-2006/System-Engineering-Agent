@@ -711,6 +711,13 @@ mod tests {
         // SAFETY: our own child's process group.
         unsafe { libc::kill(-(c.id() as i32), libc::SIGKILL) };
         let _ = c.wait();
+        // `wait` reaps only the shell; a child it forked may still be a zombie in the group for a
+        // moment, and the cap counts the group as live until it is gone.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // SAFETY: signal 0 only checks whether the group exists.
+        while unsafe { libc::kill(-(c.id() as i32), 0) } == 0 && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     // ───────────── provider pauses: transient failure and billing (C1/C2) ─────────────
