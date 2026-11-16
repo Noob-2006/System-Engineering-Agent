@@ -34,8 +34,16 @@ fn main() {
     if !target.contains("android") && !target.contains("apple-ios") {
         let _ = std::fs::create_dir_all("vm");
         println!("cargo:rerun-if-changed=vm/bundle.json");
+        println!("cargo:rerun-if-env-changed=SEAGENT_NO_VM_BUNDLE");
         if !Path::new("vm/bundle.json").is_file() {
-            println!("cargo:warning=src-tauri/vm has no bundle.json: this build has NO built-in VM (tools fall back to the OS sandbox); stage it with packaging/vm/bundle.sh");
+            // A release build (`cargo tauri build`) makes the installers people get: without the VM
+            // it must fail, not warn into a scrolled-away log (#15). Dev builds keep working.
+            let release = std::env::var("PROFILE").as_deref() == Ok("release");
+            let opted_out = std::env::var("SEAGENT_NO_VM_BUNDLE").as_deref() == Ok("1");
+            if release && !opted_out {
+                panic!("src-tauri/vm has no bundle.json: this app would ship WITHOUT its built-in VM. Run apps/desktop/scripts/prepare-vm.sh <triple> (then prepare-sidecar.sh), or set SEAGENT_NO_VM_BUNDLE=1 to build without the VM on purpose.");
+            }
+            println!("cargo:warning=src-tauri/vm has no bundle.json: this build has NO built-in VM (tools fall back to the OS sandbox); stage it with apps/desktop/scripts/prepare-vm.sh");
         }
     }
     println!("cargo:rustc-env=SEAGENT_TARGET_TRIPLE={target}");

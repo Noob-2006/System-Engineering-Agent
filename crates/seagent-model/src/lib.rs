@@ -106,8 +106,13 @@ pub struct ProviderConfig {
     pub api_key: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
+    /// Request / session idle timeout. For a managed llama.cpp server (`model_path`) also how
+    /// long it may sit unused before it is stopped to free its memory (unset: kept running).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_timeout_secs: Option<u64>,
+    /// Managed llama.cpp server: how long the first `/health` may take (default 180 s).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_timeout_secs: Option<u64>,
     /// More env vars tried after `api_key_env` (first non-empty wins).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub key_envs: Vec<String>,
@@ -424,6 +429,15 @@ fn unavailable(cfg: &ProviderConfig, feature: &str) -> String {
     )
 }
 
+/// Stop every managed llama.cpp server this process started (`main` runs this before
+/// `std::process::exit`, which skips destructors). 0 in a build without the `local` feature.
+pub fn shutdown_local_servers() -> usize {
+    #[cfg(feature = "local")]
+    return local::shutdown_all();
+    #[cfg(not(feature = "local"))]
+    0
+}
+
 pub fn build(cfg: &ProviderConfig) -> Result<Arc<dyn Provider>, String> {
     build_with_idle(
         cfg,
@@ -588,6 +602,12 @@ fn fetch_models(cfg: &ProviderConfig, cred: &dyn CredSource, strict: bool) -> Re
     }
     if !cfg.models.is_empty() && cfg.has_quirk("static_models") {
         return Ok(cfg.models.clone());
+    }
+    // Managed llama.cpp without a `base_url`: the server only exists once a request starts it
+    // (and listing must not load a multi-GB model), so the list comes from config / the GGUF.
+    #[cfg(feature = "local")]
+    if cfg.model_path.is_some() && cfg.base_url.trim().is_empty() {
+        return local::offline_models(cfg);
     }
     let c = cred.get().map_err(|e| format!("{}: {e}", cfg.id))?;
     usable_key(&cfg.id, &c).map_err(|e| e.to_string())?;

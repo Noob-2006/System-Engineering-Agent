@@ -99,6 +99,8 @@ pub fn main() {
             1
         }
     };
+    // `process::exit` runs no destructors: managed llama.cpp servers would outlive us (#17).
+    seagent_model::shutdown_local_servers();
     std::process::exit(code);
 }
 
@@ -1908,7 +1910,20 @@ fn cmd_config(a: &Args) -> R {
         }
         "validate" => {
             let ws = workspace(a)?;
-            load_config(a, &ws, &paths)?;
+            let cfg = load_config(a, &ws, &paths)?;
+            // Provider keys written as `{{secret:NAME}}` must name a secret the vault has (#20).
+            match load_vault(&paths) {
+                Ok(vault) => {
+                    let problems = Providers::new(&cfg.providers, vault)?.secret_problems();
+                    if !problems.is_empty() {
+                        for p in &problems {
+                            eprintln!("seagent: {p}");
+                        }
+                        return Err(Fail::Msg(format!("config has {} unresolved secret reference(s)", problems.len())));
+                    }
+                }
+                Err(e) => eprintln!("seagent: note: vault not readable, `{{{{secret:…}}}}` references not checked ({e})"),
+            }
             println!("config ok");
             Ok(0)
         }

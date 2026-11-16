@@ -1084,22 +1084,58 @@ pub fn watchdog_reason(sock: &Path, data: Option<&Path>, watch: Option<i32>) -> 
     None
 }
 
+/// Consecutive one-second checks the daemon's own executable must be missing before it stops:
+/// an in-place upgrade (package manager, the app's updater) swaps the file with a short gap.
+pub const EXE_GONE_CHECKS: u32 = 5;
+
+/// Whether the executable the daemon started from (`exe`, recorded at start — never re-resolved,
+/// so a rebuilt or upgraded binary at the same path counts as present) has disappeared: the
+/// volume it ran from was ejected (a macOS `.dmg`, #16) or the app was deleted. Such a daemon
+/// can no longer be restarted or upgraded, yet it would keep the console port and control socket
+/// and make the next real launch fail with "seagentd is already running".
+pub fn exe_gone(exe: Option<&Path>) -> bool {
+    exe.is_some_and(|e| !e.exists())
+}
+
 fn spawn_watchdog(sock: std::path::PathBuf, data: std::path::PathBuf, watch: Option<i32>) {
     // Only watch the data directory if it exists now (it always does once seagentd.log is open).
     let data = data.exists().then_some(data);
+    let exe = std::env::current_exe().ok().filter(|e| e.exists());
     let _ = std::thread::Builder::new().name("seagentd-watchdog".into()).spawn(move || {
+        let mut missing = 0u32;
         while !STOP.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_secs(1));
             if STOP.load(Ordering::SeqCst) {
                 break;
             }
-            if let Some(why) = watchdog_reason(&sock, data.as_deref(), watch) {
+            let mut why = watchdog_reason(&sock, data.as_deref(), watch);
+            missing = if exe_gone(exe.as_deref()) { missing + 1 } else { 0 };
+            if why.is_none() && missing >= EXE_GONE_CHECKS {
+                why = exe.as_ref().map(|e| format!("its executable {} is gone (volume ejected or app removed)", e.display()));
+            }
+            if let Some(why) = why {
                 eprintln!("seagentd: shutting down: {why}");
                 STOP.store(true, Ordering::SeqCst);
                 break;
             }
         }
     });
+}
+
+#[cfg(test)]
+mod exe_gone_tests {
+    #[test]
+    fn a_removed_executable_counts_as_gone_and_a_replaced_one_does_not() {
+        let d = seagent_core::tmp::TempDir::new("seagent-daemon-exe-gone");
+        let exe = d.path().join(if cfg!(windows) { "seagent.exe" } else { "seagent" });
+        std::fs::write(&exe, b"v1").unwrap();
+        assert!(!super::exe_gone(Some(&exe)));
+        std::fs::remove_file(&exe).unwrap();
+        assert!(super::exe_gone(Some(&exe)), "ejected / deleted");
+        std::fs::write(&exe, b"v2").unwrap();
+        assert!(!super::exe_gone(Some(&exe)), "an upgrade at the same path keeps the daemon");
+        assert!(!super::exe_gone(None), "unknown executable: never a reason to stop");
+    }
 }
 
 #[cfg(test)]

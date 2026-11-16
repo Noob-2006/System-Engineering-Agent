@@ -19,6 +19,28 @@ max_tokens = 8192
 # compaction = "deepseek/deepseek-chat"   # 明確指定才會用便宜模型壓縮（會放棄對話前綴快取）
 # group_router = "deepseek/deepseek-chat" # hosted room 的 routing = "auto" 用來挑成員
 
+# 自訂 provider（id 自取；用法 --model <id>/<model>）。金鑰用 {{secret:NAME}} 或 api_key_env 引用
+# vault：api_key / api_keys / headers / query 裡的 {{secret:NAME}} 都會從 vault 代入，
+# vault 沒有這個名字時直接報錯（seagent config validate 也會檢查），絕不會把佔位字串當金鑰送出。
+[providers.my-llama]
+format = "openai_chat"
+base_url = "http://127.0.0.1:8081/v1"            # 自己跑的 llama-server / vLLM / LM Studio
+api_key = "{{secret:LLAMA_SERVER_API_KEY}}"      # 或 api_key_env = "LLAMA_SERVER_API_KEY"（先環境變數再 vault）
+models = ["gemma-4-e4b"]
+
+# 由 seagent 託管的 llama.cpp：設了 model_path 就不需要 base_url。第一次請求時在隨機
+# loopback 埠啟動 llama-server，seagent 結束（含 seagent run、當機、kill -9）時一起停止。
+[providers.gemma-local]
+format = "openai_chat"
+auth = "none"
+model_path = "/models/gemma-4-E4B-it-Q4_K_M.gguf"   # 也可以是放多個 GGUF 的目錄（router 模式，依檔名載入）
+command = "llama-server"                            # 預設 llama-server（PATH 上）
+args = ["-c", "32768", "-np", "1", "--jinja"]       # agent 的系統提示 + 工具約 15K tokens，-c 至少 16384
+startup_timeout_secs = 180                          # 等第一次 /health 的時間（大模型載入慢就加大）
+idle_timeout_secs = 900                             # 閒置 15 分鐘（/slots 顯示沒在生成）就停掉釋放記憶體；
+                                                    # 下一個請求自動再啟動。不設 = 一直跑到 seagent 結束
+# seagent models list gemma-local 不會啟動伺服器：列出 models，未設則列 GGUF 檔名。
+
 [compaction]
 trim_tool_results = "pressure"     # pressure（預設，超過 prune_threshold 才裁剪舊工具輸出）| always（舊行為）
 # prune_threshold = 0.5

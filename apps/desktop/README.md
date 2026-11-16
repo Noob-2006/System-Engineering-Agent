@@ -52,12 +52,38 @@ Prerequisites: Rust ≥ 1.80 (the agent itself needs 1.89), the Tauri CLI
 | macOS | Xcode command line tools; both Rust targets for a universal build |
 
 ```bash
+apps/desktop/scripts/prepare-vm.sh                 # the built-in VM → src-tauri/vm/ (see below)
 apps/desktop/scripts/prepare-sidecar.sh            # builds seagent → src-tauri/binaries/seagent-<host triple>
 cd apps/desktop
 cargo tauri dev                                    # run with the sidecar from binaries/
 cargo tauri build                                  # installers in target/release/bundle/
-cargo tauri build --target universal-apple-darwin  # after prepare-sidecar.sh universal-apple-darwin
+cargo tauri build --target universal-apple-darwin  # after prepare-vm.sh + prepare-sidecar.sh universal-apple-darwin
 ```
+
+**The built-in VM.** Every desktop installer carries the microVM (resources `vm/`: the guest
+kernel + initramfs and the OS's hypervisor front-end — vfkit on macOS, QEMU on Windows,
+Firecracker on Linux — each pinned by hash), and the agent pins the image's manifest sha256
+(`SEAGENT_VM_IMAGE_MANIFEST_SHA256`). CI stages it in the `vm-image` job; locally
+`scripts/prepare-vm.sh [triple]` does the same:
+
+| Host | What prepare-vm.sh does |
+|---|---|
+| Linux (same CPU as the guest) | builds the image with `packaging/vm/build-image.sh --build-kernel` (packages: `build-essential flex bison bc libelf-dev cpio xz-utils musl-tools`, Rust target `<arch>-unknown-linux-musl`) |
+| macOS, Windows (or the other CPU) | builds it **in a Linux container** — Docker or Podman (`CONTAINER=podman`); arm64 on Apple Silicon for the macOS app, amd64 for Windows. The image is a Linux kernel built from source and a static musl guest agent, so it cannot be built natively there |
+| any | `IMAGE=<dir>` reuses a built image instead (e.g. CI's `vm-bundle-image-<arch>` artifact) |
+
+It then runs `packaging/vm/bundle.sh --os <os> --arch <arch> --lock packaging/vm/image.lock`
+into `src-tauri/vm/`. `prepare-sidecar.sh` reads the pin from `src-tauri/vm/bundle.json`, and
+both it and a release `cargo tauri build` **fail** when a desktop build has no `vm/bundle.json`
+or one staged for another OS — an app without it would silently fall back to the OS sandbox.
+To build without the VM on purpose, set `SEAGENT_NO_VM_BUNDLE=1` for both steps.
+
+**macOS dmg.** `cargo tauri build` lays the dmg out on an interstitial image mounted at
+`/Volumes/dmg.XXXXXX`; an app started from there exits at once (no window, daemon or VM), so it can
+no longer keep that image busy (`hdiutil: couldn't unmount … Resource busy`). Opening the app from
+inside a read-only `.dmg` shows "drag SE Agent to Applications first" and starts nothing, and a
+daemon whose executable disappears (an ejected image, a deleted app) stops itself within seconds
+instead of holding port 8640.
 
 Installers (`bundle.targets`): Windows NSIS `.exe` (per-user, `installMode: currentUser`, English /
 繁體中文 / 简体中文, stops a running daemon before upgrading via `windows/hooks.nsh`) and MSI (WiX;

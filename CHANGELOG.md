@@ -4,6 +4,31 @@ All notable changes to SE Agent are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/). Security fixes are marked **Security**.
 
+## [Unreleased]
+
+### Fixed
+- Managed llama.cpp (`model_path`): `seagent run` no longer leaves its `llama-server` running
+  after it exits (`std::process::exit` skipped the destructor); the server is a tied child that
+  also dies with a crashed or `kill -9`ed seagent — PDEATHSIG on Linux/Android, a kill-on-close Job
+  Object on Windows, a pipe guard on macOS (#17).
+- `seagent models list <managed provider>` lists the configured `models` (else the GGUF file
+  names) without starting the server, instead of failing with "/models is missing scheme" (#18).
+- Managed llama.cpp: new `startup_timeout_secs` (default 180) for the `/health` wait;
+  `idle_timeout_secs` now stops a server that has been idle that long (llama.cpp `/slots` tells a
+  running generation from an idle one) and the next request starts it again. A config that set
+  only `idle_timeout_secs` keeps at least that long to start, with a one-time note (#19).
+- `api_key`, `api_keys`, `headers` and `query` values of a provider resolve `{{secret:NAME}}` from
+  the vault; an unknown name is a clear error, and `seagent config validate` reports it, instead
+  of the placeholder being sent as the key (#20).
+- Desktop builds: `scripts/prepare-vm.sh` stages the built-in VM locally (the guest image is built
+  in a Linux container on macOS/Windows); `prepare-sidecar.sh` and release `cargo tauri build`
+  fail without it unless `SEAGENT_NO_VM_BUNDLE=1`, and the agent's image pin comes from
+  `src-tauri/vm/bundle.json` (#15).
+- macOS: the app started from the dmg being built exits immediately, so the dmg step no longer
+  fails with "Resource busy"; started from a mounted release dmg it asks to be installed first and
+  starts no daemon; a daemon whose executable is gone stops itself (#16).
+- Two provider-cache tests no longer fail when another test names a key variable at the same time.
+
 ## [0.2.1-alpha] — 2026-11-16
 
 The first version published on GitHub Releases. The desktop VM becomes the agent's computer by

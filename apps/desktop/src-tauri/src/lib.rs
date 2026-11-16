@@ -205,8 +205,59 @@ fn appimage_cjk_font() {
     std::env::set_var("FONTCONFIG_FILE", conf);
 }
 
+/// Running from a mounted disk image instead of an installed copy (#16). Only macOS acts on it;
+/// the classification is plain path/text work, unit-tested everywhere.
+#[derive(Debug, PartialEq, Clone, Copy)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+enum ImageLaunch {
+    /// The read-write image `cargo tauri build` / `bundle_dmg.sh` lays out (`hdiutil attach
+    /// -mountrandom /Volumes` → `/Volumes/dmg.XXXXXX`). Something on the build machine launches
+    /// the app from there; it must do nothing at all, or its daemon and VM keep the image busy and
+    /// the dmg step fails ("hdiutil: couldn't unmount … Resource busy").
+    Interstitial,
+    /// A read-only disk image (the release `.dmg` opened by double-clicking the app inside it).
+    /// A daemon started from it dies with "binary gone" on eject and blocks the real install.
+    ReadOnly,
+}
+
+/// Classify `exe` against `mounts` (the output of `/sbin/mount`: `<dev> on <path> (<opts>)`).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn image_launch(exe: &std::path::Path, mounts: &str) -> Option<ImageLaunch> {
+    let rest = exe.strip_prefix("/Volumes").ok()?;
+    let vol = rest.components().next()?.as_os_str().to_str()?;
+    if vol.len() == 10 && vol.starts_with("dmg.") {
+        return Some(ImageLaunch::Interstitial);
+    }
+    let point = std::path::Path::new("/Volumes").join(vol);
+    mounts
+        .lines()
+        .filter_map(|l| l.split_once(" on ").map(|(_, a)| a))
+        .filter_map(|a| a.rsplit_once(" ("))
+        .any(|(p, opts)| std::path::Path::new(p) == point && opts.trim_end_matches(')').split(", ").any(|o| o == "read-only"))
+        .then_some(ImageLaunch::ReadOnly)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_image_launch() -> Option<ImageLaunch> {
+    let exe = std::env::current_exe().ok()?;
+    if !exe.starts_with("/Volumes") {
+        return None;
+    }
+    let mounts = std::process::Command::new("/sbin/mount").output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    image_launch(&exe, &mounts)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // macOS: started from a disk image (#16). The build's interstitial image: exit before anything
+    // (no window, no daemon, no VM, no state written). The release image: say "install first".
+    #[cfg(target_os = "macos")]
+    let image = macos_image_launch();
+    #[cfg(target_os = "macos")]
+    if image == Some(ImageLaunch::Interstitial) {
+        eprintln!("seagent-desktop: running from a dmg being built ({}); exiting", std::env::current_exe().map(|e| e.display().to_string()).unwrap_or_default());
+        return;
+    }
     // Before any thread or GTK/WebKit process starts (they read FONTCONFIG_FILE once).
     #[cfg(target_os = "linux")]
     appimage_cjk_font();
@@ -246,6 +297,20 @@ pub fn run() {
             commands::console_access_token,
         ])
         .setup(move |app| {
+            #[cfg(target_os = "macos")]
+            if image == Some(ImageLaunch::ReadOnly) {
+                use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+                let h = app.handle().clone();
+                app.dialog()
+                    .message(t(
+                        "SE Agent 正從磁碟映像檔（.dmg）執行。請先把 SE Agent 拖到「應用程式」資料夾，再從那裡開啟。\n\n從映像檔執行時不會啟動背景服務，退出映像檔後它也無法繼續運作。",
+                        "SE Agent is running from the disk image (.dmg). Drag SE Agent to the Applications folder first, then open it from there.\n\nThe background service is not started from the image: it could not keep running once the image is ejected.",
+                    ))
+                    .title("SE Agent")
+                    .kind(MessageDialogKind::Info)
+                    .show(move |_| h.exit(0));
+                return Ok(());
+            }
             let data_dir = app.path().app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("seagent-app"));
             let _ = std::fs::create_dir_all(&data_dir);
             app.manage(AppState { data_dir, boot: Mutex::new(boot::Snapshot::default()), booting: AtomicBool::new(false), agent: Mutex::new(None), base: Mutex::new(None), tunnel: tokio::sync::Mutex::new(None), background, supervising: AtomicBool::new(false), quitting: AtomicBool::new(false) });
@@ -277,6 +342,18 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn disk_image_launches_are_recognised() {
+        use super::{image_launch, ImageLaunch};
+        use std::path::Path;
+        let mounts = "/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)\n/dev/disk6s1 on /Volumes/SE Agent (hfs, local, nodev, nosuid, read-only, noowners, quarantine, mounted by me)\n/dev/disk7s2 on /Volumes/Backup (apfs, local, nodev, nosuid, journaled, noowners)\n";
+        assert_eq!(image_launch(Path::new("/Volumes/dmg.x2nlgS/SE Agent.app/Contents/MacOS/seagent-desktop"), mounts), Some(ImageLaunch::Interstitial));
+        assert_eq!(image_launch(Path::new("/Volumes/SE Agent/SE Agent.app/Contents/MacOS/seagent-desktop"), mounts), Some(ImageLaunch::ReadOnly));
+        assert_eq!(image_launch(Path::new("/Volumes/Backup/Apps/SE Agent.app/Contents/MacOS/seagent-desktop"), mounts), None, "a writable external disk is a real install");
+        assert_eq!(image_launch(Path::new("/Applications/SE Agent.app/Contents/MacOS/seagent-desktop"), mounts), None);
+        assert_eq!(image_launch(Path::new("/Volumes/dmg.toolongname/x"), mounts), None);
+    }
+
     #[test]
     fn navigation_policy() {
         let ok = |u: &str| super::navigation_allowed(&u.parse().unwrap());

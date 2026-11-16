@@ -28,6 +28,8 @@ static CONFIG_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 
 /// Reload provider `id`'s key variable from the config just written (see [`LIVE_KEY_ENV`]).
 pub fn reload_key_env(id: &str, name: &str) {
+    #[cfg(test)]
+    let _quiet = tests::CACHE_QUIET.read().unwrap_or_else(|e| e.into_inner());
     LIVE_KEY_ENV.write().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), name.to_string());
     CONFIG_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
@@ -38,6 +40,23 @@ pub fn live_key_env(id: &str) -> Option<String> {
 }
 
 /// `cfg` with a key variable learned at run time filled in (only when the config names none).
+/// Names of the `{{secret:NAME}}` placeholders left in `s`.
+fn secret_names(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = s;
+    while let Some(i) = rest.find("{{secret:") {
+        let after = &rest[i + 9..];
+        match after.find("}}") {
+            Some(j) => {
+                out.push(after[..j].to_string());
+                rest = &after[j + 2..];
+            }
+            None => break,
+        }
+    }
+    out
+}
+
 fn with_live_key_env(mut cfg: ProviderConfig) -> ProviderConfig {
     if cfg.key_env_names().is_empty() && cfg.api_key.is_none() && cfg.api_keys.is_empty() {
         if let Some(n) = live_key_env(&cfg.id) {
@@ -153,6 +172,45 @@ impl Providers {
         self.plugins.lock().unwrap().insert(id.to_string(), p);
     }
 
+    /// `{{secret:NAME}}` in the fields that carry credentials (`api_key`, `api_keys`, `headers`
+    /// and `query` values) resolved from the vault (#20) — the same placeholders `[app] token`
+    /// and every other secret-bearing setting accept. A placeholder whose secret is not in the
+    /// vault is an error naming it, never a literal `{{secret:…}}` sent as the key.
+    pub fn with_secrets(&self, cfg: &ProviderConfig) -> Result<ProviderConfig, String> {
+        let mut c = cfg.clone();
+        let mut missing: Vec<(String, String)> = Vec::new();
+        let mut sub = |field: String, v: &mut String| {
+            if v.contains("{{secret:") {
+                *v = self.vault.substitute(v);
+                missing.extend(secret_names(v).into_iter().map(|n| (field.clone(), n)));
+            }
+        };
+        if let Some(k) = c.api_key.as_mut() {
+            sub("api_key".into(), k);
+        }
+        for (i, k) in c.api_keys.iter_mut().enumerate() {
+            sub(format!("api_keys[{i}]"), k);
+        }
+        for (h, v) in c.headers.iter_mut() {
+            sub(format!("headers.{h}"), v);
+        }
+        for (q, v) in c.query.iter_mut() {
+            sub(format!("query.{q}"), v);
+        }
+        let Some((_, first)) = missing.first() else { return Ok(c) };
+        let refs: Vec<String> = missing.iter().map(|(f, n)| format!("{f} = \"{{{{secret:{n}}}}}\"")).collect();
+        Err(format!(
+            "provider `{}`: {} names a secret the vault does not have — run `seagent secrets set {first}` (or use `api_key_env = \"{first}\"`: the environment, then the vault)",
+            cfg.id,
+            refs.join(", "),
+        ))
+    }
+
+    /// Providers whose `{{secret:…}}` placeholders the vault cannot fill (`seagent config validate`).
+    pub fn secret_problems(&self) -> Vec<String> {
+        self.configs.values().filter_map(|c| self.with_secrets(c).err()).collect()
+    }
+
     fn vault_key(&self, name: &str) -> Option<String> {
         let v = self.vault.substitute(&format!("{{{{secret:{name}}}}}"));
         (!v.starts_with("{{secret:")).then_some(v)
@@ -160,6 +218,7 @@ impl Providers {
 
     /// Every credential `cfg` can use, labelled (store entries first).
     pub fn credentials(&self, cfg: &ProviderConfig) -> Result<Vec<Labeled>, String> {
+        let cfg = &self.with_secrets(cfg)?;
         let mut out: Vec<Labeled> = Vec::new();
         if let Some(s) = &self.store {
             for e in s.entries(&cfg.id) {
@@ -317,6 +376,7 @@ impl Resolver for Providers {
                         return Ok(p.clone());
                     }
                     let idle = Duration::from_secs(cfg.idle_timeout_secs.unwrap_or(seagent_model::DEFAULT_IDLE_SECS).max(1));
+                    let cfg = self.with_secrets(&cfg)?;
                     let p = self.watched(&cfg.id, seagent_model::build_with(&cfg, Arc::new(auth::Static::new(Some(key))), idle)?);
                     let p = self.maybe_record(&cfg.id, p);
                     self.cache.lock().unwrap().insert(ck, p.clone());
@@ -328,6 +388,7 @@ impl Resolver for Providers {
             return Ok(p.clone());
         }
         let cfg = self.config(id).cloned().map(with_live_key_env).ok_or_else(|| format!("unknown provider `{id}` (see `seagent providers list`)"))?;
+        let cfg = self.with_secrets(&cfg)?;
         let p = self.build(&cfg)?;
         let p = self.maybe_record(&cfg.id, p);
         self.cache.lock().unwrap().insert(id.to_string(), p.clone());
@@ -336,8 +397,16 @@ impl Resolver for Providers {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// [`reload_key_env`] empties every provider cache of the process (tests run in parallel and
+    /// some of them, here and in `ops::model_keys`, name key variables at run time). A test that
+    /// asserts "built once, then cached" holds this for writing, so no such bump lands in between.
+    pub(crate) static CACHE_QUIET: std::sync::RwLock<()> = std::sync::RwLock::new(());
+    fn cache_quiet() -> std::sync::RwLockWriteGuard<'static, ()> {
+        CACHE_QUIET.write().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn overrides_extend_and_validate() {
@@ -357,6 +426,35 @@ mod tests {
         let mut bad = BTreeMap::new();
         bad.insert("x".to_string(), "format = \"telepathy\"\nbase_url=\"http://a\"".parse::<toml::Table>().unwrap());
         assert!(Providers::new(&bad, Arc::new(Vault::empty())).is_err());
+    }
+
+    /// #20: `api_key = "{{secret:NAME}}"` sends the vault value, never the placeholder text;
+    /// a placeholder the vault cannot fill is a clear error (and a `config validate` problem).
+    #[test]
+    fn secret_placeholders_in_provider_keys_resolve_from_the_vault() {
+        let v = Arc::new(Vault::empty());
+        let mut o = BTreeMap::new();
+        o.insert("gemma-local".to_string(), "format = \"openai_chat\"
+base_url = \"http://127.0.0.1:9/v1\"
+api_key = \"{{secret:LLAMA_SERVER_API_KEY}}\"
+api_keys = [\"{{secret:LLAMA_SERVER_API_KEY}}\", \"plain-2\"]
+headers = { X-Org = \"org-{{secret:ORG_ID}}\" }".parse::<toml::Table>().unwrap());
+        let p = Providers::new(&o, v.clone()).unwrap().with_store(Store::new(seagent_core::tmp::scratch_path(format!("seagent-prov-secret-{}/auth.json", std::process::id()))));
+        let err = p.provider("gemma-local").err().unwrap();
+        assert!(err.contains("{{secret:LLAMA_SERVER_API_KEY}}") && err.contains("seagent secrets set LLAMA_SERVER_API_KEY"), "{err}");
+        assert_eq!(p.secret_problems().len(), 1);
+        v.set("LLAMA_SERVER_API_KEY", "sk-llama-from-vault").unwrap();
+        v.set("ORG_ID", "42").unwrap();
+        assert!(p.secret_problems().is_empty());
+        let r = p.with_secrets(p.config("gemma-local").unwrap()).unwrap();
+        assert_eq!(r.api_key.as_deref(), Some("sk-llama-from-vault"));
+        assert_eq!(r.api_keys, vec!["sk-llama-from-vault".to_string(), "plain-2".to_string()]);
+        assert_eq!(r.headers["X-Org"], "org-42");
+        let creds = p.credentials(p.config("gemma-local").unwrap()).unwrap();
+        let tokens: Vec<Option<String>> = creds.iter().map(|(_, _, c)| c.get().unwrap().token).collect();
+        assert!(tokens.contains(&Some("sk-llama-from-vault".into())), "{tokens:?}");
+        assert!(tokens.iter().all(|t| !t.as_deref().unwrap_or("").contains("{{secret:")), "placeholder text never becomes the key: {tokens:?}");
+        assert!(p.provider("gemma-local").is_ok());
     }
 
     #[test]
@@ -534,6 +632,7 @@ mod tests {
     /// ent-086: a session of team `eng` uses `OPENAI_API_KEY__ENG`, other sessions the shared key.
     #[test]
     fn team_scoped_keys_win_inside_the_team_scope() {
+        let _quiet = cache_quiet();
         let v = Vault::empty();
         v.set("GROQ_API_KEY", "gsk-shared").unwrap();
         v.set("GROQ_API_KEY__ENG_PLATFORM", "gsk-eng").unwrap();
@@ -558,6 +657,7 @@ mod tests {
 
     #[test]
     fn a_vault_change_drops_cached_providers() {
+        let _quiet = cache_quiet();
         let mut o = BTreeMap::new();
         let t: toml::Table = "format = \"openai_chat\"
 base_url = \"http://127.0.0.1:9/v1\"
