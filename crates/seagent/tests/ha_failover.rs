@@ -243,6 +243,46 @@ fn texts(evs: &[Value]) -> String {
     evs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n")
 }
 
+/// What a failed assertion prints, compact enough for a CI annotation: every event cut to 200
+/// characters, the worker pool's own view, the state and parent of every seagent process (a
+/// killed worker that is still around, or a process still holding its pipe, shows up here), and
+/// the last 40 lines of the daemon's log.
+fn diag(c: &Cluster, home: &Path, d: &Proc, sid: &str) -> String {
+    let cut = |s: &str, n: usize| s.chars().take(n).collect::<String>();
+    let mut out = String::from("--- events ---\n");
+    for e in c.events(sid) {
+        out += &cut(&e.to_string(), 200);
+        out.push('\n');
+    }
+    let st = rpc(home, "workers.status", json!({})).map(|v| v.to_string()).unwrap_or_else(|e| e);
+    out += &format!("--- workers.status ---\n{st}\n--- seagent processes (pid ppid state cmd) ---\n");
+    if let Ok(rd) = std::fs::read_dir("/proc") {
+        for ent in rd.flatten() {
+            let pid = ent.file_name().to_string_lossy().to_string();
+            if !pid.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            let raw = std::fs::read(ent.path().join("cmdline")).unwrap_or_default();
+            let cmd = raw.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).to_string()).collect::<Vec<_>>().join(" ");
+            if !cmd.contains("seagent") || cmd.contains("ha_failover") {
+                continue;
+            }
+            // /proc/<pid>/stat: pid (comm) state ppid ...
+            let stat = std::fs::read_to_string(ent.path().join("stat")).unwrap_or_default();
+            let f: Vec<&str> = stat.rsplit_once(") ").map(|x| x.1).unwrap_or("").split(' ').collect();
+            out += &format!("{pid} {} {} {}\n", f.get(1).unwrap_or(&"?"), f.first().unwrap_or(&"?"), cut(&cmd, 120));
+        }
+    }
+    let log = d.log();
+    let lines: Vec<&str> = log.lines().collect();
+    out += &format!("--- daemon log, last 40 of {} lines ---\n", lines.len());
+    for l in &lines[lines.len().saturating_sub(40)..] {
+        out += &cut(l, 300);
+        out.push('\n');
+    }
+    out
+}
+
 /// Bring up a leader `a` and a standby `b`, and start a turn on `a` that the model holds.
 fn leader_mid_turn(c: &Cluster, extra: &str) -> (PathBuf, Proc, PathBuf, Proc, String) {
     let ha = c.node("a", extra);
@@ -321,18 +361,18 @@ fn a_dead_worker_session_is_redispatched_to_another_worker() {
     let sid = rpc(&h, "session.create", json!({"workspace": c.shared.join("ws"), "title": "pooled"})).unwrap()["id"].as_str().unwrap().to_string();
     let r = rpc(&h, "session.submit", json!({"id": sid, "text": "work"})).unwrap();
     assert_eq!(r["worker"], true, "{r}");
-    assert!(wait_for(Duration::from_secs(30), || c.model.seen.load(Ordering::SeqCst) >= 1), "no worker asked the model:\n{}", d.log());
+    assert!(wait_for(Duration::from_secs(30), || c.model.seen.load(Ordering::SeqCst) >= 1), "no worker asked the model:\n{}", diag(&c, &h, &d, &sid));
     let st = rpc(&h, "workers.status", json!({})).unwrap();
     let busy = st["workers"].as_array().unwrap().iter().find(|w| w["session"] == sid.as_str()).cloned().unwrap_or_else(|| panic!("{st}"));
     let pid = busy["pid"].as_u64().unwrap() as u32;
     assert_ne!(pid, d.pid(), "the session runs in a worker process, not in the daemon");
     // SAFETY: a worker our daemon started for this test.
     unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
-    assert!(wait_for(Duration::from_secs(30), || texts(&c.events(&sid)).contains("fresh reply")), "not re-dispatched:\n{}\n{}", texts(&c.events(&sid)), d.log());
+    assert!(wait_for(Duration::from_secs(30), || texts(&c.events(&sid)).contains("fresh reply")), "not re-dispatched after killing worker pid {pid}:\n{}", diag(&c, &h, &d, &sid));
     let evs = texts(&c.events(&sid));
-    assert!(evs.contains("re-dispatched"), "{evs}");
+    assert!(evs.contains("re-dispatched"), "{}", diag(&c, &h, &d, &sid));
     let st = rpc(&h, "workers.status", json!({})).unwrap();
-    assert_eq!(st["redispatched"], 1, "{st}");
+    assert_eq!(st["redispatched"], 1, "{}", diag(&c, &h, &d, &sid));
     let workers: Vec<u32> = st["workers"].as_array().unwrap().iter().filter_map(|w| w["pid"].as_u64().map(|p| p as u32)).collect();
     d.extra.extend(workers.iter().copied());
     c.model.release.store(true, Ordering::SeqCst);
