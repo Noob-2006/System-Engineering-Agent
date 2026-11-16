@@ -13,8 +13,8 @@ SE Agent（System Engineering Agent，指令 `seagent`）是一個代理程式�
 
 | 平台 | 需求 | 安裝檔 | 怎麼裝 |
 |---|---|---|---|
-| Windows | Windows 10 1809+ 或 11，x64；WebView2（缺的話安裝程式自動下載） | `SE Agent_<版本>_x64-setup.exe`（建議）或 `SE Agent_<版本>_x64_<語言>.msi` | 見 [§0.1](#01-windows) |
-| macOS | macOS 11+，Apple Silicon 或 Intel | `SE Agent_<版本>_universal.dmg` | 見 [§0.2](#02-macos) |
+| Windows | Windows 10 1809+ 或 11，x64；WebView2（缺的話安裝程式自動下載） | `SE-Agent_<版本>_x64-setup.exe`（建議）或 `SE-Agent_<版本>_x64_<語言>.msi` | 見 [§0.1](#01-windows) |
+| macOS | macOS 11+，Apple Silicon 或 Intel | `SE-Agent_<版本>_universal.dmg` | 見 [§0.2](#02-macos) |
 | Linux 桌面 | x86_64，有圖形環境（WebKitGTK 4.1） | `SE-Agent_<版本>_amd64.AppImage`、`SE-Agent_<版本>_amd64.deb`、`SE-Agent-<RPM 版本>.x86_64.rpm` | 見 [§0.3](#03-linux-桌面) |
 | Linux 伺服器 | 任何發行版，x86_64／aarch64，不需圖形環境 | `install.sh`、deb／rpm／pacman／apk、壓縮檔、容器 | [§2](#2-一個指令安裝)、[§3](#3-用發行版的套件管理員安裝)、[§4](#4-其他安裝方式) |
 | Android | Android 8.0+（API 26），arm64 | `SE-Agent_android-arm64_*.apk` | 見 [§0.4](#04-android) |
@@ -24,7 +24,7 @@ SE Agent（System Engineering Agent，指令 `seagent`）是一個代理程式�
 
 ### 0.1 Windows
 
-1. 下載 `SE Agent_<版本>_x64-setup.exe` 和 `SHA256SUMS-app.txt`，在 PowerShell 比對：`Get-FileHash '.\SE Agent_0.2.1-alpha_x64-setup.exe'`，結果要和 `SHA256SUMS-app.txt` 裡同名那一行相同。
+1. 下載 `SE-Agent_<版本>_x64-setup.exe` 和 `SHA256SUMS-app.txt`，在 PowerShell 比對：`Get-FileHash .\SE-Agent_0.2.1-alpha_x64-setup.exe`，結果要和 `SHA256SUMS-app.txt` 裡同名那一行相同。
 2. 點兩下安裝。SmartScreen 顯示「Windows 已保護您的電腦」時，按「其他資訊 → 仍要執行」。安裝程式可選英文、繁體中文、簡體中文。
 3. `setup.exe` 是**個人安裝**：裝在 `%LOCALAPPDATA%\SE Agent`，不需要系統管理員。安裝過程會詢問是否安裝**虛擬顯示器驅動**（在你螢幕外側加一台虛擬螢幕，代理的 Bot Desktop 因此能以 30–60 fps 串流，否則約 10 fps；你自己的螢幕不變）。這一步會跳一次 UAC，需要系統管理員同意，可以略過；升級時不會再問。
 4. `.msi` 適合 IT 用群組原則或 Intune 集中部署（需要系統管理員），三種語言各一個檔，內容相同。

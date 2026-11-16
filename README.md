@@ -29,11 +29,11 @@ SE Agent（System Engineering Agent，指令 `seagent`）是自架的 AI 代理�
 
 | 你用的是 | 下載 | 然後 |
 |---|---|---|
-| Windows 10（1809 以上）／11，x64 | `SE Agent_0.2.1-alpha_x64-setup.exe`（個人安裝，不需管理員）；或 `SE Agent_0.2.1-alpha_x64_<語言>.msi`（en-US、zh-TW、zh-CN） | 點兩下 →「其他資訊 → 仍要執行」（未簽章）→ 安裝完自動開設定精靈 |
-| macOS 11 以上（Apple Silicon／Intel） | `SE Agent_0.2.1-alpha_universal.dmg` | 拖進「應用程式」→ 第一次在 App 上按右鍵「打開」（未公證；macOS 15 以後改到「系統設定 → 隱私權與安全性」按「強制打開」） |
-| Linux 桌面（x86_64） | `.AppImage`（任何發行版）、`.deb`、`.rpm` | `chmod +x` 後執行，或 `sudo apt install ./SE-Agent_*.deb`／`sudo dnf install ./SE-Agent-*.rpm` |
+| Windows 10（1809 以上）／11，x64 | `SE-Agent_0.2.1-alpha_x64-setup.exe`（個人安裝，不需管理員）；或 `SE-Agent_0.2.1-alpha_x64_<語言>.msi`（en-US、zh-TW、zh-CN） | 點兩下 →「其他資訊 → 仍要執行」（未簽章）→ 安裝完自動開設定精靈 |
+| macOS 11 以上（Apple Silicon／Intel） | `SE-Agent_0.2.1-alpha_universal.dmg` | 拖進「應用程式」→ 第一次在 App 上按右鍵「打開」（未公證；macOS 15 以後改到「系統設定 → 隱私權與安全性」按「強制打開」） |
+| Linux 桌面（x86_64） | `SE-Agent_0.2.1-alpha_amd64.AppImage`（任何發行版）、`SE-Agent_0.2.1-alpha_amd64.deb`、`SE-Agent-0.2.1-0.1.alpha.x86_64.rpm` | `chmod +x` 後執行，或 `sudo apt install ./SE-Agent_*.deb`／`sudo dnf install ./SE-Agent-*.rpm` |
 | Linux 伺服器（x86_64／aarch64） | 一個指令（見下方） | 照印出的連結開設定精靈 |
-| Android 8 以上（arm64） | `.apk` | 允許「安裝不明應用程式」後安裝 |
+| Android 8 以上（arm64） | `SE-Agent_android-arm64_app-universal-debug.apk` | 允許「安裝不明應用程式」後安裝 |
 | iOS／iPadOS | 尚未上架（要 Apple 開發者憑證） | — |
 
 App 第一次開啟時，會安裝並啟動背景服務，再在視窗裡開設定精靈。之後 App 常駐在系統匣，可以開啟主控台、暫停、重新啟動服務、設定登入時啟動、檢查更新。各平台的完整步驟、校驗方式、升級和疑難排解，見 [docs/install.md](docs/install.md)。
