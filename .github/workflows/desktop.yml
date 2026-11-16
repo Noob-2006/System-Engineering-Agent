@@ -359,7 +359,11 @@ jobs:
         run: python3 apps/desktop/scripts/latest-json.py dist "${GITHUB_REF_NAME#v}" "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"
       - name: SHA256SUMS-app.txt
         # The installers are not in release.yml's SHA256SUMS (Linux CLI packages); they get their own list.
-        run: cd dist && find . -maxdepth 1 -type f ! -name SHA256SUMS-app.txt -printf '%P\0' | LC_ALL=C sort -z | xargs -0 sha256sum -- > SHA256SUMS-app.txt && cat SHA256SUMS-app.txt
+        run: |
+          cd dist || exit 1
+          find . -maxdepth 1 -type f -printf '%P\0' | LC_ALL=C sort -z | xargs -0 sha256sum -- > "$RUNNER_TEMP/app-sums"
+          mv "$RUNNER_TEMP/app-sums" SHA256SUMS-app.txt
+          cat SHA256SUMS-app.txt
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}
