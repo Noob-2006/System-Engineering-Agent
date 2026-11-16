@@ -178,7 +178,7 @@ OpenAI、Anthropic、Google Gemini／Vertex、AWS Bedrock、DeepSeek、OpenRoute
 設定 `[computer_use] target = "vm:<名稱>"` 後，代理的瀏覽器跑在桌面 VM 裡，主控台右側即時顯示整個桌面，你可以隨時接手。沒有桌面 VM 時，代理用無頭瀏覽器，主控台顯示該分頁的畫面。
 
 **Q：桌面 VM 需要什麼？**
-QEMU 與硬體加速（沒有加速也能跑但很慢）。Windows 安裝包內附 QEMU，只要在「Windows 功能」勾選 Windows Hypervisor Platform；Linux 裝 `qemu-system-x86 qemu-utils` 並把自己加進 `kvm` 群組；macOS `brew install qemu`。第一次建立會下載約 418 MB 的 Debian 映像、裝好桌面後約 2.7 GB，視網路約 4–20 分鐘（下載可續傳，套件自動選最快的鏡像站）。VM 的時鐘跟著主機的時區。見 [desktop-vm.md](desktop-vm.md)。
+QEMU 與硬體加速（沒有加速也能跑但很慢）。Windows 安裝包內附 QEMU，只要在「Windows 功能」勾選 Windows Hypervisor Platform；Linux 裝 `qemu-system-x86 qemu-utils` 並把自己加進 `kvm` 群組；macOS `brew install qemu`。第一次建立會下載約 418 MB 的 Debian 映像、裝好桌面後約 2.7 GB，視網路約 4–20 分鐘（映像從多個 Debian 鏡像站平行分段下載、可續傳，斷網會等網路回來；套件自動選最快的鏡像站）。VM 的時鐘跟著主機的時區。見 [desktop-vm.md](desktop-vm.md)。
 
 **Q：可以在 VM 裡打中文嗎？**
 可以。用你自己的輸入法在主控台打，送進 VM 的是組好的文字。VM 裡的終端機要用 Ctrl+Shift+V 才能貼上，送進終端機的最好是英數。

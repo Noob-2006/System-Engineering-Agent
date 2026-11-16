@@ -66,6 +66,15 @@ Platform status (real-device vs build-only) is in the README.
   keymap file the bundle does not ship).
 - The fastest apt mirror was ignored: Debian cloud images name the archive in
   `/etc/apt/mirrors/debian.list`.
+- Desktop VM image download crawled at tens of KB/s from one far mirror: it now fetches 4 MiB
+  segments in parallel from cloud.debian.org and the official mirrors that serve the same file
+  (about 10x faster), resumes from the missing segments, and still checks the pinned sha256.
+- A network outage during the image download dropped every source and could restart the file
+  from scratch; network errors now back off and retry until 10 minutes pass without progress,
+  and the downloaded segments are kept for the next build.
+- A provisioning VM left running after SE Agent quit held `console.log`, so the next desktop
+  VM build failed; it now ends with SE Agent (Job Object / `PR_SET_PDEATHSIG`) and leftovers
+  are ended before a build.
 - `seagent secrets set` kept a PowerShell BOM as part of the secret.
 - MSI: the driver step and the launch checkbox run; no install over an existing `setup.exe`.
 

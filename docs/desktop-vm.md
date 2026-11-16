@@ -55,7 +55,11 @@ Windows 上實測（Windows 11 Home、WHPX、只用安裝包內附的 QEMU）：
 - 來源：`https://cloud.debian.org/images/cloud/trixie/20261026-2643/debian-13-generic-amd64-20261026-2643.qcow2`
 - sha256：`7740a80114c1b5e6456c65713c76f4006e8b00eb50d8a122924ba823b9959fc5`（已對照 Debian 官方 SHA512SUMS），418 MiB。`image_url` 也可以是 `file://` 或絕對路徑（離線環境）。
 - 佈建方式：SE Agent 在主機 127.0.0.1 開一次性的 HTTP 伺服器提供 cloud-init NoCloud 種子，透過 SMBIOS `ds=nocloud;s=http://10.0.2.2:PORT/` 讓客體抓取；客體裝好 `xserver-xorg-core`、LightDM（自動登入使用者 `seagent`）、Xfce（xfwm4/panel/desktop/terminal/thunar）、`chromium`、`fonts-dejavu-core`、`fonts-noto-cjk`（繁中網頁不會變成方塊）、`locales`（產生 `zh_TW.UTF-8`，介面語言維持映像預設）、`xdotool`、`xclip` 等（不裝 recommends），最後在序列埠印出 `SEAGENT_PROVISION_OK` 並關機，SE Agent 再把結果攤平成 `<cache>/desktop-vm/desktop-<recipe>.qcow2` 與同名 `.json` manifest。
-- 下載：連線中斷時以 HTTP Range 從斷點續傳（有進度就持續重試，上次中斷留下的 `.part` 也會接著抓），最後一律比對固定的 sha256。
+- 下載：同時向 cloud.debian.org 與幾個官方鏡像站（umu.se 的 chuangtzu／laotzu／saimei、中科大）探測，凡是支援 HTTP Range 且檔案大小相同的來源都用上，每個來源 4 條連線、每段 4 MiB 平行下載（cloud.debian.org 單一連線常只有幾十 KB/s，分段後約快 10 倍以上）。最後一律比對固定的 sha256，鏡像站換不了內容。
+  - 已完成的段落記在 `<cache>/desktop-vm/*.part.segments`，中斷後下次建置從缺的段落接著抓；舊版留下的循序 `.part` 也會當成已下載的開頭。
+  - 來源回 HTTP 錯誤（例如 404、429）4 次就不再用；網路錯誤（斷線、DNS 失敗）只會退避重試，連續 10 分鐘沒有任何進度才放棄，已下載的段落保留給下一次建置。
+  - 每個來源為什麼沒被用上、下載進度（每 64 MiB 一行）都寫在 `build.log`。
+- 佈建用的 QEMU 綁在 SE Agent 身上：Windows 放進「關閉即結束」的 Job Object，Linux 用 `PR_SET_PDEATHSIG`，SE Agent 結束它就跟著結束；每次建置前也會先結束上次殘留、同一 recipe 的佈建 VM（`-name seagent-desktop-build-<recipe>`），不會再因為 `console.log` 被占用而建置失敗。
 - 套件來源：`apt_mirror = "auto"`（預設）時，佈建前同時向 deb.debian.org、交大（linux.cs.nycu.edu.tw）與幾個官方國家鏡像各抓 1 MiB 測速，選最快的給客體 apt 用；apt 會驗證簽章，換鏡像不影響安全，也不改變 recipe。設成 `""` 固定用 deb.debian.org，或填一個 Debian 套件庫網址。
 - recipe 雜湊涵蓋來源 sha256、cloud-config 範本與套件清單；設定不變時 `build` 直接回報「up to date」。解析度與 Chromium 起始網址每次開機經 SMBIOS OEM 字串（`seagent-res=`、`seagent-url=`）傳入，不必重建。
 
