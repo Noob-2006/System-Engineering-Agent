@@ -24,7 +24,7 @@ name: desktop
 on:
   push:
     tags: ["v*"]
-    branches: [main, cross-platform]
+    branches: [main]
     paths: ["apps/desktop/**", "ui/**", "share/**", "packaging/vm/**", "crates/seagent-vm/**", ".github/workflows/desktop.yml"]
   pull_request:
     paths: ["apps/desktop/**", "ui/**", "packaging/vm/**", "crates/seagent-vm/**", ".github/workflows/desktop.yml"]
