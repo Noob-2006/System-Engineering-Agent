@@ -28,6 +28,36 @@ All notable changes to SE Agent are recorded here. The format follows
   fails with "Resource busy"; started from a mounted release dmg it asks to be installed first and
   starts no daemon; a daemon whose executable is gone stops itself (#16).
 - Two provider-cache tests no longer fail when another test names a key variable at the same time.
+- Sub-agents: a background child finishing while its parent was idle, or while a message was being
+  submitted to it, could deadlock the runtime (`live.log` bookkeeping took the sub-agent registry
+  lock from inside `append`, which `settle` / `close_run` call with that lock held and
+  `submit_with` calls with the `running` lock held). The `live.log` paths now sit in their own
+  leaf lock.
+- Media commands (TTS players, STT/TTS command providers, ffmpeg): `timeout_secs` and cancel stop
+  the whole process tree. Only the direct child was killed, so a `sh -c` wrapper's player kept the
+  output pipes open and the call waited for it to finish on its own.
+- `seagent snapshot restore` could overwrite an existing snapshot: the safety snapshot it takes of
+  the current state got the same name (second-resolution stamp, short random suffix) as one taken
+  in the same second. Snapshot names are now never reused.
+- An ACP agent CLI or an MCP stdio server that dies at once is reported with its stderr (the
+  deprecated `gh copilot` banner, the server's last words) also on a busy machine; the stderr
+  wait counted from too early and the error degraded to a bare "network error" / "server is not
+  running".
+- Skills-hub searches honour a caller's per-thread network policy (`with_config`, e.g. offline)
+  in the per-source worker threads.
+- The share directory (bundled skills, roles, catalogs) is also found from `$CARGO_MANIFEST_DIR`, so
+  `cargo test` / `cargo run` work with a target directory outside the checkout.
+
+### Changed
+- Faster debug builds and tests (docs/BUILD.md, "Build and test time"): debug builds keep line
+  tables only and build third-party crates at `opt-level = 1`; the seagent unit tests no longer
+  download the models.dev price file, and the Connections-page test no longer reaches public
+  skill registries. `cargo test --workspace` 209 s → 133 s, target directory 28 → 15 GB. Release
+  builds are unchanged.
+- Test fixes found while timing the suite: tests that changed `SEAGENT_HOME` under their own
+  lock, memory tests that leaked the process-wide write-approval default, a Discord test that
+  ordered two independent server threads, a nostr test that could "tamper" a signature into
+  itself, and fake QEMU scripts that could hit "Text file busy".
 
 ## [0.2.1-alpha] — 2026-11-16
 

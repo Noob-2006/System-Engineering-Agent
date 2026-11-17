@@ -337,11 +337,51 @@ adds megabytes, not punish normal code growth (which has its own review).
 | clean `cargo build -p seagent --release` (one configuration, empty target dir, 20 cores) | 215 s |
 | switching features and rebuilding the same target dir | 130–206 s per configuration |
 | a release-only target dir | 1.3 GB |
-| the full workspace `target/` with debug + `--all-targets` + test binaries | 83 GB (this audit round; it is what `cargo test --workspace` needs) |
+| the full workspace `target/` with debug + `--all-targets` + test binaries | 83 GB (this audit round; it is what `cargo test --workspace` needs); 15 GB fresh since the 2026-11-17 dev profile (see "Build and test time") |
 
 The bulk of the build time is not `seagent` itself but the 117 dependency crates; feature
 switches rebuild most of `seagent-channel`/`seagent-model` and re-run LTO on the final binary,
 which is why each variant in the table costs minutes rather than seconds.
+
+## Build and test time
+
+Measured 2026-11-17 on Linux x86_64 (WSL2, 20 cores, 30 GB), each column in a fresh target
+directory, the same tree before and after the changes below.
+
+| Step | before | after |
+| --- | --- | --- |
+| `cargo build -p seagent` (clean, debug) | 54.6 s | 54 s |
+| `cargo test --workspace --no-run` (after the build) | 68.1 s | 58 s |
+| touch `crates/seagent/src/lib.rs`, rebuild every test binary | 5.2 s | 4.4 s |
+| `cargo test --workspace` (run) | ~209 s | 133 s |
+| target directory (debug + all test binaries) | 28 GB | 15 GB |
+| largest test binary | 749 MB | 339 MB |
+
+What changed, and why:
+
+* **`[profile.dev] debug = "line-tables-only"`** — panics and backtraces keep file:line; a
+  debugger loses variables (`CARGO_PROFILE_DEV_DEBUG=full cargo build` when you need them). Half
+  the disk, faster links.
+* **`[profile.dev.package."*"] opt-level = 1`** — third-party crates only, our code stays at
+  opt-level 0. The Skills Guard scan of the shipped role tree (fancy-regex) took 25 s per test at
+  opt-level 0. Built once and cached; opt-level 2 was measured no faster.
+* **Tests that waited on the network or on each other** — the seagent unit tests no longer
+  download the models.dev price file on every fresh home; the Connections-page dispatch test runs
+  offline (the skills-hub fan-out now inherits a `with_config` network override); tests that set
+  `SEAGENT_HOME` all hold `testkit::env_lock`; memory tests that change the process-wide
+  write-approval default hold `globals_lock` and restore it.
+* **Product bugs the timing work exposed** (CHANGELOG): a sub-agent registry deadlock (5 hangs in
+  100 runs of `agents_tools` before, 0 after), media-command timeouts that did not stop
+  grandchildren, a snapshot name collision, and crash reports of an ACP CLI / MCP server that
+  lost the process's stderr on a loaded machine.
+
+**Not done: splitting `crates/seagent` further.** A clean build ends with ~18 s in which only
+`seagent` compiles, so a split looked attractive. `src/ops/` (47k lines, half the crate) is the
+obvious candidate, but it is not separable: it names 30 other modules of the crate 409 times
+(`slash`, `args`, `load_config`, `build_agent`, `providers`, `ext`, …) and is named by them 168
+times. Moving it out means moving most of the crate below it, i.e. a new layer in
+`crates/seagent/tests/arch_lint.rs` and `docs/ARCHITECTURE.md` for a gain only on clean builds —
+an incremental rebuild of every test binary after editing `seagent` already takes ~4 s.
 
 ## Why not `-C link-arg=--icf=all` or `build-std`?
 
