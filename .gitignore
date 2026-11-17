@@ -1,1 +1,5 @@
 target/
+
+# Python bytecode the plugin-compat tests write when they import fixtures
+__pycache__/
+*.pyc
