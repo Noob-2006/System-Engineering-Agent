@@ -329,10 +329,21 @@ impl Rpc {
     /// A dead CLI: report the crash text (or the deprecation banner) rather than a bare exit code.
     fn exit_error(&mut self) -> ProviderError {
         // The stderr pump can still hold the crash text when stdout first hits EOF; wait for
-        // its EOF (upstream joins it for 1s) so a dead CLI is not reported as a Timeout.
-        let end = Instant::now() + Duration::from_secs(1);
+        // its EOF (upstream joins it for 1s) so a dead CLI is not reported as a Timeout. The
+        // second counts from the moment the process has exited (capped at 5 s): on a loaded
+        // machine the pump thread may run well after the exit, and a fixed second from here
+        // lost the banner (a deprecated CLI then read as a network error).
+        let start = Instant::now();
+        let mut exited_at: Option<Instant> = None;
         loop {
-            if self.stderr.lock().unwrap().eof || Instant::now() > end {
+            if self.stderr.lock().unwrap().eof {
+                break;
+            }
+            let now = Instant::now();
+            if exited_at.is_none() && self.child.try_wait().is_ok_and(|s| s.is_some()) {
+                exited_at = Some(now);
+            }
+            if exited_at.is_some_and(|t| now > t + Duration::from_secs(1)) || now > start + Duration::from_secs(5) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(20));

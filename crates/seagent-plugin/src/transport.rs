@@ -148,6 +148,8 @@ pub(crate) struct StdioConn {
     alive: Arc<AtomicBool>,
     pgid: i32,
     stderr: Arc<Mutex<VecDeque<u8>>>,
+    /// Set when the stderr pipe hit EOF (see `wait_drained`).
+    drained: Arc<(Mutex<bool>, std::sync::Condvar)>,
 }
 
 fn push_log(buf: &Mutex<VecDeque<u8>>, bytes: &[u8]) {
@@ -296,7 +298,7 @@ impl StdioConn {
                 let _ = tx.send(Err("server closed its output (crashed or exited) before replying".into()));
             }
         });
-        Ok(Arc::new(StdioConn { stdin, pending, next: AtomicU64::new(1), alive, pgid, stderr }))
+        Ok(Arc::new(StdioConn { stdin, pending, next: AtomicU64::new(1), alive, pgid, stderr, drained }))
     }
 }
 
@@ -311,6 +313,10 @@ fn write_line(stdin: &Mutex<Option<ChildStdin>>, v: &Value) -> Result<(), String
 impl Conn for StdioConn {
     fn request(&self, method: &str, params: Value, timeout: Duration, cancel: &Cancel) -> Result<Value, String> {
         if !self.alive() {
+            // It died before this request (a server that exits at once): let the stderr pump
+            // finish first, as the reader threads do, so the caller's error carries the server's
+            // last words — on a busy machine the pump can still be behind here.
+            wait_drained(&self.drained);
             return Err("server is not running".into());
         }
         let id = self.next.fetch_add(1, Ordering::SeqCst);
