@@ -444,17 +444,23 @@ fn connectors_js_calls_only_served_methods() {
     let t = kit();
     let c = ctx(&t);
     let cc = channels_setup::ctx_for(&t.paths, &t.ws);
-    for m in &called {
-        let mine = METHODS.contains(&m.as_str()) || channels_setup::METHODS.contains(&m.as_str()) || crate::ops::connectors_extra::METHODS.contains(&m.as_str());
-        let sibling = crate::ops::ui_methods::METHODS.contains(&m.as_str()) || crate::ops::webui::METHODS.contains(&m.as_str()) || crate::HOST_METHODS.contains(&m.as_str());
-        assert!(mine || sibling, "connectors.js calls `{m}`, which nothing serves");
-        if METHODS.contains(&m.as_str()) || crate::ops::connectors_extra::METHODS.contains(&m.as_str()) {
-            assert!(call(&c, m, &json!({})).is_some(), "`{m}` is listed but not dispatched");
+    // Every method is called once with empty params, and some (`skills.search` …) reach public
+    // registries: offline for this thread and the workers it fans out to, so this checks
+    // dispatch only. Before, it waited on real HTTP: 7 s on a quiet machine, 55 s on a busy one.
+    let offline = seagent_net::http::NetConfig { offline: true, ..Default::default() };
+    seagent_net::http::with_config(offline, || {
+        for m in &called {
+            let mine = METHODS.contains(&m.as_str()) || channels_setup::METHODS.contains(&m.as_str()) || crate::ops::connectors_extra::METHODS.contains(&m.as_str());
+            let sibling = crate::ops::ui_methods::METHODS.contains(&m.as_str()) || crate::ops::webui::METHODS.contains(&m.as_str()) || crate::HOST_METHODS.contains(&m.as_str());
+            assert!(mine || sibling, "connectors.js calls `{m}`, which nothing serves");
+            if METHODS.contains(&m.as_str()) || crate::ops::connectors_extra::METHODS.contains(&m.as_str()) {
+                assert!(call(&c, m, &json!({})).is_some(), "`{m}` is listed but not dispatched");
+            }
+            if channels_setup::METHODS.contains(&m.as_str()) {
+                assert!(channels_setup::call(&cc, m, &json!({})).is_some(), "`{m}` is listed but not dispatched");
+            }
         }
-        if channels_setup::METHODS.contains(&m.as_str()) {
-            assert!(channels_setup::call(&cc, m, &json!({})).is_some(), "`{m}` is listed but not dispatched");
-        }
-    }
+    });
     for m in METHODS.iter().chain(channels_setup::METHODS).chain(crate::ops::connectors_extra::METHODS) {
         assert!(called.iter().any(|x| x == m), "`{m}` is served but the page never calls it");
         assert!(!crate::ops::ui_methods::METHODS.contains(m) && !crate::ops::webui::METHODS.contains(m), "`{m}` registered twice");

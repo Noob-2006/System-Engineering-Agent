@@ -152,12 +152,20 @@ impl Hub {
         let srcs: Vec<Box<dyn Source + '_>> = self.sources().into_iter().filter(|s| provider.is_some() || want == "all" || want.is_empty() || s.id() == want || s.id() == "official").collect();
         let deadline = Instant::now() + timeout;
         let (tx, rx) = std::sync::mpsc::channel();
+        // The caller's network policy override (`seagent_net::http::with_config`, e.g. offline)
+        // is per thread: carry it into the workers, or they would ignore it.
+        let net = seagent_net::http::local_override();
         std::thread::scope(|sc| {
             for s in &srcs {
                 let tx = tx.clone();
                 let q = query.to_string();
+                let net = net.clone();
                 sc.spawn(move || {
-                    let r = s.search(&q, limit.max(10).min(Self::browse_cap(s.id())));
+                    let n = limit.max(10).min(Self::browse_cap(s.id()));
+                    let r = match net {
+                        Some(c) => seagent_net::http::with_config(c, || s.search(&q, n)),
+                        None => s.search(&q, n),
+                    };
                     let _ = tx.send((s.id().to_string(), r));
                 });
             }

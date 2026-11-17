@@ -540,7 +540,6 @@ headers = { X-Org = \"org-{{secret:ORG_ID}}\" }".parse::<toml::Table>().unwrap()
         use std::ffi::OsString;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        static ENV: Mutex<()> = Mutex::new(());
         struct EnvGuard(Vec<(String, Option<OsString>)>);
         impl Drop for EnvGuard {
             fn drop(&mut self) {
@@ -567,7 +566,9 @@ headers = { X-Org = \"org-{{secret:ORG_ID}}\" }".parse::<toml::Table>().unwrap()
             }
         }
 
-        let _lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        // The crate-wide env lock (`SEAGENT_HOME` is process-global): a lock of this test's own
+        // let it change the home under every other test that holds `testkit::env_lock`.
+        let _lock = crate::testkit::env_lock();
         let root = seagent_core::tmp::TempDir::new("seagent-prov-replay");
         let fixture = root.join("run.jsonl");
         let old: Vec<(String, Option<OsString>)> = ["SEAGENT_HOME", "SEAGENT_MODEL_REPLAY", "SEAGENT_MODEL_RECORD"]
@@ -599,7 +600,6 @@ headers = { X-Org = \"org-{{secret:ORG_ID}}\" }".parse::<toml::Table>().unwrap()
     fn record_env_wraps_a_built_provider_and_creates_the_fixture() {
         use std::ffi::OsString;
 
-        static ENV: Mutex<()> = Mutex::new(());
         struct EnvGuard(Vec<(String, Option<OsString>)>);
         impl Drop for EnvGuard {
             fn drop(&mut self) {
@@ -612,7 +612,7 @@ headers = { X-Org = \"org-{{secret:ORG_ID}}\" }".parse::<toml::Table>().unwrap()
             }
         }
 
-        let _lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::testkit::env_lock();
         let root = seagent_core::tmp::TempDir::new("seagent-prov-record");
         let fixture = root.join("run.jsonl");
         let old: Vec<(String, Option<OsString>)> = ["SEAGENT_HOME", "SEAGENT_MODEL_REPLAY", "SEAGENT_MODEL_RECORD"]

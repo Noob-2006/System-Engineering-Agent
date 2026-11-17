@@ -71,7 +71,11 @@ pub static NO_FOREGROUND_FETCH: std::sync::atomic::AtomicBool = std::sync::atomi
 
 fn auto_refresh_prices(cache: &std::path::Path, cfg: &Config) {
     const STALE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
-    let enabled = cfg.pricing.auto_refresh && !seagent_net::http::no_background_fetch() && cfg.compliance.profile != "government";
+    // This crate's unit tests call `load_config` on a fresh home again and again: each would
+    // download the ~6 MB price file (up to 8 s of waiting, while holding the env lock other tests
+    // queue on). The test binaries that spawn `seagent` pin `SEAGENT_OFFLINE` for the same reason
+    // (crates/seagent/tests/test_hygiene.rs, rule e).
+    let enabled = cfg.pricing.auto_refresh && !seagent_net::http::no_background_fetch() && cfg.compliance.profile != "government" && !cfg!(test);
     if !enabled {
         return;
     }

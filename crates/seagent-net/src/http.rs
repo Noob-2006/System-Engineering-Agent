@@ -94,6 +94,14 @@ pub(crate) fn overridden() -> bool {
     LOCAL.with(|l| l.borrow().is_some())
 }
 
+/// This thread's [`with_config`] override, if any — for code that fans a request out to worker
+/// threads, so they run under the same policy (`with_config(c, …)` in each) instead of the
+/// process-wide one. `None` outside `with_config`: workers then use the shared config (and its
+/// connection cache) as before.
+pub fn local_override() -> Option<NetConfig> {
+    LOCAL.with(|l| l.borrow().clone())
+}
+
 pub fn current() -> NetConfig {
     LOCAL.with(|l| l.borrow().clone()).unwrap_or_else(|| state().read().unwrap().clone())
 }

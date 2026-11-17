@@ -85,6 +85,20 @@ seagent-browser = { path = "crates/seagent-browser" }
 seagent-media = { path = "crates/seagent-media" }
 seagent-vm = { path = "crates/seagent-vm" }
 
+# Debug builds and `cargo test`: line tables only (file:line in panics and backtraces, no
+# variable/type info for a debugger). Measured on this tree (docs/BUILD.md, "Build cost"): the
+# target dir 28 → 15 GB, the largest test binary 749 → 339 MB, links ~15 % faster. For a
+# debugger session: `CARGO_PROFILE_DEV_DEBUG=full cargo build`.
+[profile.dev]
+debug = "line-tables-only"
+
+# Third-party crates only (`"*"` never matches a workspace member, so our own code stays
+# unoptimized and fully debuggable): regex / fancy-regex, serde, image and friends are
+# 10–50× slower at opt-level 0, and tests that scan the shipped role tree with Skills Guard
+# spent 25 s in regex alone. Built once, then cached; opt-level 2 measured no faster here.
+[profile.dev.package."*"]
+opt-level = 1
+
 [profile.release]
 opt-level = "s"
 lto = true
