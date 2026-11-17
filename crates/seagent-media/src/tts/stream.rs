@@ -317,8 +317,12 @@ mod tests {
             std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let m3 = Media { cfg: crate::MediaConfig::from_toml(&format!("[tts]\nplayer = \"{} {{path}}\"\ntimeout_secs = 1\n", slow.display())), http: Default::default() };
+        let t = std::time::Instant::now();
         let e4 = play(&m3, &audio, &Cancel::new()).unwrap_err();
         assert!(e4.contains("timed out"), "{e4}");
+        // The whole tree is stopped: before, `sleep 30` (a grandchild of the `sh` player) kept the
+        // output pipes open and the call returned only when it finished, 30 s later.
+        assert!(t.elapsed() < std::time::Duration::from_secs(10), "timeout_secs = 1 took {:?}", t.elapsed());
     }
 
     #[test]

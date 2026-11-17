@@ -144,7 +144,11 @@ pub fn run_env_in(argv: &[String], stdin: Option<&[u8]>, env: &[(String, String)
     if let Some(d) = cwd {
         cmd.current_dir(d);
     }
-    let mut child = cmd.spawn().map_err(|e| format!("cannot run `{prog}`: {e}"))?;
+    // Its own process group (a Job Object on Windows), tied to seagent: a timeout or a cancel
+    // stops the whole tree. Killing only the direct child left a grandchild (the player or
+    // encoder a `sh -c` wrapper started) holding stdout/stderr, so this call waited for it to
+    // finish on its own and `timeout_secs` / cancel had no effect.
+    let mut child = seagent_core::proc::spawn_tied(cmd, false).map_err(|e| format!("cannot run `{prog}`: {e}"))?;
     if let (Some(data), Some(mut si)) = (stdin.map(|d| d.to_vec()), child.stdin.take()) {
         std::thread::spawn(move || {
             let _ = si.write_all(&data);
@@ -168,6 +172,7 @@ pub fn run_env_in(argv: &[String], stdin: Option<&[u8]>, env: &[(String, String)
             break Some(s);
         }
         if cancel.is_cancelled() || start.elapsed() >= timeout {
+            seagent_core::proc::kill_group(child.id() as i32, Duration::from_millis(500));
             let _ = child.kill();
             let _ = child.wait();
             break None;
