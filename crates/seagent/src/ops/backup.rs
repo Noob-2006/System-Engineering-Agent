@@ -256,7 +256,12 @@ fn snap_dir(paths: &Paths) -> PathBuf {
 
 /// Config + state without session history: config, secrets, memory, skills, commands, schedules.
 pub fn snapshot_create(paths: &Paths, label: &str) -> Result<String, String> {
-    let (p, _) = create(paths, &snap_dir(paths).join(format!("snap-{}.tar.gz", stamp())), &Opts { sessions: false, label: label.into(), ..Default::default() })?;
+    // Never reuse a name: `restore` snapshots the current state right after the snapshot it
+    // restores may have been taken, and the stamp's random suffix is short — a collision
+    // silently replaced the older snapshot.
+    let dir = snap_dir(paths);
+    let file = (0..64).map(|_| dir.join(format!("snap-{}.tar.gz", stamp()))).find(|f| !f.exists()).ok_or("cannot pick a free snapshot name")?;
+    let (p, _) = create(paths, &file, &Opts { sessions: false, label: label.into(), ..Default::default() })?;
     Ok(p.file_name().unwrap().to_string_lossy().trim_end_matches(".tar.gz").to_string())
 }
 
