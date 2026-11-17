@@ -11,6 +11,9 @@
 //! 3. `/usr/local/share/seagent`, `/usr/share/seagent` (distro packages, the container image)
 //! 4. a source checkout the binary runs from (`target/{debug,release}/seagent` and the test
 //!    binaries under `target/debug/deps`): the checkout's `share/`.
+//! 5. the checkout of the package cargo is running (`$CARGO_MANIFEST_DIR`, which `cargo run` /
+//!    `cargo test` set at run time): tests and `cargo run` with a target directory outside the
+//!    checkout (`CARGO_TARGET_DIR`, a shared build cache). An installed binary never has it.
 
 use std::path::{Path, PathBuf};
 
@@ -27,6 +30,19 @@ pub fn source_root_of(exe: &Path) -> Option<PathBuf> {
 
 /// Pure form of [`share_dir`]: `env` is `$SEAGENT_SHARE_DIR`, `exe` the running binary.
 pub fn share_dir_with(env: Option<PathBuf>, exe: Option<&Path>, system: &[&str]) -> Option<PathBuf> {
+    share_dir_from(env, exe, system, None)
+}
+
+/// [`share_dir_with`] plus step 5: `manifest` is `$CARGO_MANIFEST_DIR` (run time, set by cargo).
+pub fn share_dir_from(env: Option<PathBuf>, exe: Option<&Path>, system: &[&str], manifest: Option<&Path>) -> Option<PathBuf> {
+    share_dir_found(env, exe, system).or_else(|| {
+        // `source_root_of` looks at the ancestors of a file path, so name a file in the package.
+        let root = source_root_of(&manifest?.join("Cargo.toml"))?;
+        crate::platform::layout::canonicalize(&root.join("share")).ok()
+    })
+}
+
+fn share_dir_found(env: Option<PathBuf>, exe: Option<&Path>, system: &[&str]) -> Option<PathBuf> {
     if let Some(p) = env.filter(|p| p.is_dir()) {
         return Some(p);
     }
@@ -48,7 +64,8 @@ pub fn share_dir_with(env: Option<PathBuf>, exe: Option<&Path>, system: &[&str])
 
 /// seagent's shared data dir. See the module docs for the search order.
 pub fn share_dir() -> Option<PathBuf> {
-    share_dir_with(std::env::var_os("SEAGENT_SHARE_DIR").map(PathBuf::from), std::env::current_exe().ok().as_deref(), crate::layout::system::SHARE)
+    let manifest = std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from);
+    share_dir_from(std::env::var_os("SEAGENT_SHARE_DIR").map(PathBuf::from), std::env::current_exe().ok().as_deref(), crate::layout::system::SHARE, manifest.as_deref())
 }
 
 /// A file or directory shipped under the share dir (`rel` like `vm/build-image.sh`).
@@ -102,6 +119,13 @@ mod tests {
         let dev = r.join("repo/target/debug/deps/seagent-abc");
         assert_eq!(share_dir_with(None, Some(&dev), &[]).unwrap(), crate::platform::layout::canonicalize(&r.join("repo/share")).unwrap());
         assert_eq!(source_root_of(&dev).unwrap(), r.join("repo"));
+        // A target dir outside the checkout (CARGO_TARGET_DIR): found through the package
+        // cargo runs; without it (an installed binary) still nothing.
+        tree(r, &["elsewhere/debug/deps", "repo/crates/seagent"]);
+        let outside = r.join("elsewhere/debug/deps/seagent-abc");
+        assert!(share_dir_from(None, Some(&outside), &[], None).is_none());
+        assert_eq!(share_dir_from(None, Some(&outside), &[], Some(&r.join("repo/crates/seagent"))).unwrap(), crate::platform::layout::canonicalize(&r.join("repo/share")).unwrap());
+        assert_eq!(share_dir_from(None, Some(&outside), &[sys.to_str().unwrap()], Some(&r.join("repo/crates/seagent"))).unwrap(), sys, "step 5 is the last resort");
     }
 
     #[test]
