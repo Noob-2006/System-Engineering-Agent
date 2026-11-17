@@ -82,6 +82,10 @@ fn kb_status(h: &Host, viewer: Option<&seagent_kernel::tenancy::Viewer>) -> Resu
 
 /// The live [`Host`] for `paths.data` (created on first use, reused afterwards).
 pub fn host(cfg: &Config, paths: &Paths) -> Arc<Host> {
+    // Tests: the defaults lock before the registry lock, the order every test path takes
+    // (`Host::new` below re-enters it on this thread), so the two can never deadlock.
+    #[cfg(test)]
+    let _globals = crate::globals_lock();
     let mut g = registry().lock().unwrap();
     if let Some((_, w)) = g.iter().find(|(p, _)| *p == paths.data) {
         if let Some(h) = w.upgrade() {
@@ -230,6 +234,17 @@ mod tests {
 
     #[test]
     fn limits_and_write_approval_come_from_config() {
+        // These are process-wide: hold them for the whole test and put the defaults back after,
+        // or `cli::tests::memory_verbs` (default: no write approval) reads `true`.
+        let _globals = crate::globals_lock();
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                seagent_tools::memory_store::set_limits(seagent_tools::memory_store::CHAR_CAP, seagent_tools::memory_store::CHAR_CAP);
+                seagent_tools::memory_store::set_write_approval(false);
+            }
+        }
+        let _restore = Restore;
         let (mut cfg, paths, d) = env("host-limits");
         cfg.memory = MemoryConfig { memory_char_limit: Some(1234), user_char_limit: Some(77), write_approval: true, ..Default::default() };
         let h = host(&cfg, &paths);

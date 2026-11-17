@@ -1222,7 +1222,9 @@ mod tests {
         bad.content = "hellO".into();
         assert!(!bad.verify(), "content change breaks id");
         let mut bad2 = ev.clone();
-        bad2.sig = format!("{}00", &ev.sig[..126]);
+        // A different last byte (BIP-340 signatures use fresh randomness: the real one ends in
+        // `00` one time in 256, and a fixed `00` then changed nothing).
+        bad2.sig = format!("{}{}", &ev.sig[..126], if ev.sig.ends_with("00") { "01" } else { "00" });
         assert!(!bad2.verify());
     }
 

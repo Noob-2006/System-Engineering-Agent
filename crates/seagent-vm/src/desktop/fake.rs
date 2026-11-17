@@ -108,19 +108,33 @@ pub fn fake_qemu(dir: &Path) -> (PathBuf, PathBuf) {
     let q = dir.join("qemu-system-x86_64");
     let img = dir.join("qemu-img");
     let d = dir.display();
-    std::fs::write(
+    write_script(
         &q,
-        format!(
+        &format!(
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{d}/qemu.args'\npf=''\nprev=''\nfor a in \"$@\"; do [ \"$prev\" = -pidfile ] && pf=\"$a\"; prev=\"$a\"; done\n( trap 'exit 0' TERM; while :; do sleep 0.2; done ) </dev/null >/dev/null 2>&1 &\necho $! > \"$pf\"\n: > '{d}/spawned'\nexit 0\n"
         ),
-    )
-    .unwrap();
+    );
     // `create … <file>` or `create … <file> <size>`: touch the file argument.
-    std::fs::write(&img, "#!/bin/sh\nf=''\nfor a in \"$@\"; do case \"$a\" in *G) ;; *) f=\"$a\" ;; esac; done\n[ \"$1\" = create ] && : > \"$f\"\nexit 0\n").unwrap();
+    write_script(&img, "#!/bin/sh\nf=''\nfor a in \"$@\"; do case \"$a\" in *G) ;; *) f=\"$a\" ;; esac; done\n[ \"$1\" = create ] && : > \"$f\"\nexit 0\n");
     for p in [&q, &img] {
         crate::host::make_executable(p).unwrap();
     }
     (q, img)
+}
+
+/// Write a script that is run right afterwards, without this process ever holding it open for
+/// writing: a child another test forks meanwhile inherits such a descriptor until its `exec`, and
+/// running the script then fails with "Text file busy" (ETXTBSY). `sh` writes it instead.
+#[cfg(unix)]
+fn write_script(p: &Path, body: &str) {
+    let mut c = crate::host::command("/bin/sh").args(["-c", "cat > \"$1\"", "sh"]).arg(p).stdin(std::process::Stdio::piped()).spawn().unwrap();
+    c.stdin.take().unwrap().write_all(body.as_bytes()).unwrap();
+    assert!(c.wait().unwrap().success(), "writing {}", p.display());
+}
+
+#[cfg(not(unix))]
+fn write_script(p: &Path, body: &str) {
+    std::fs::write(p, body).unwrap();
 }
 
 /// Desktop VMs under `dir` whose QEMU is [`fake_qemu`] and whose image is a placeholder file

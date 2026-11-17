@@ -479,6 +479,8 @@ mod tests {
 
     #[test]
     fn memory_verbs() {
+        // `memory status` reports the process-wide write-approval default (no file yet).
+        let _globals = crate::globals_lock();
         let h = crate::test_host("cli", |_| {});
         assert_eq!(run(&h, &a("memory add uses nix")).unwrap(), "saved");
         run(&h, &a("memory add --user is a teacher")).unwrap();

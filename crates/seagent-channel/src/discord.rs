@@ -2444,9 +2444,19 @@ mod tests {
         let g = collect(&d, 2);
         assert_eq!(g.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["first", "after"]);
         d.stop();
-        let log: Vec<String> = rx.try_iter().collect();
-        let want = ["conn0 /?v=10&encoding=json", "identify", "hb 2", "zombie dropped", "conn1 /resume/?v=10&encoding=json", "resume \"S1\" 2", "conn2 /resume/?v=10&encoding=json", "resume 3", "conn3 /?v=10&encoding=json", "identify"];
-        let mut it = log.iter();
+        let mut log: Vec<String> = rx.try_iter().collect();
+        // "zombie dropped" is logged by conn0's server thread when it sees the socket close,
+        // which races with the client's reconnect (logged by conn1's thread): it must happen,
+        // but its place relative to conn1 is not the client's to decide.
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while !log.iter().any(|l| l == "zombie dropped") && std::time::Instant::now() < until {
+            if let Ok(l) = rx.recv_timeout(Duration::from_millis(100)) {
+                log.push(l);
+            }
+        }
+        assert!(log.iter().any(|l| l == "zombie dropped"), "the client never left the zombie connection: {log:#?}");
+        let want = ["conn0 /?v=10&encoding=json", "identify", "hb 2", "conn1 /resume/?v=10&encoding=json", "resume \"S1\" 2", "conn2 /resume/?v=10&encoding=json", "resume 3", "conn3 /?v=10&encoding=json", "identify"];
+        let mut it = log.iter().filter(|l| *l != "zombie dropped");
         for w in want {
             assert!(it.any(|l| l == w), "missing {w:?} in order: {log:#?}");
         }

@@ -93,6 +93,8 @@ pub struct Host {
 impl Host {
     pub fn new(data: &Path, cfg: &MemoryConfig, subst: Subst, sampler: Option<Sampler>) -> Result<Arc<Host>, String> {
         let settings = Settings::from_config(cfg)?;
+        #[cfg(test)]
+        let _globals = crate::globals_lock();
         seagent_tools::memory_store::set_limits(cfg.memory_char_limit.unwrap_or(seagent_tools::memory_store::CHAR_CAP), cfg.user_char_limit.unwrap_or(seagent_tools::memory_store::CHAR_CAP));
         seagent_tools::memory_store::set_write_approval(cfg.write_approval);
         Ok(Self::with_settings(data, settings, subst, sampler))
@@ -278,6 +280,38 @@ pub fn slash(h: &Arc<Host>, name: &str, args: &str, session: &str) -> Option<Res
 /// Scheduler hook: run the dreaming sweep when its cron is due (call every scheduler tick).
 pub fn dreaming_tick(h: &Arc<Host>, now_ms: u64) -> Option<Result<String, String>> {
     dreaming::tick(h, now_ms)
+}
+
+#[cfg(test)]
+thread_local! {
+    static GLOBALS_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Held by a test that reads or sets the process-wide memory-store defaults (`[memory]
+/// write_approval`, the char limits — [`Host::new`] sets them for every host it builds), so
+/// parallel tests do not flip them under each other. Re-entrant on one thread: a test holding
+/// it may still build hosts.
+#[cfg(test)]
+pub(crate) struct GlobalsGuard(#[allow(dead_code)] Option<std::sync::MutexGuard<'static, ()>>);
+
+#[cfg(test)]
+impl Drop for GlobalsGuard {
+    fn drop(&mut self) {
+        if self.0.is_some() {
+            GLOBALS_HELD.with(|h| h.set(false));
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn globals_lock() -> GlobalsGuard {
+    static L: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    if GLOBALS_HELD.with(|h| h.get()) {
+        return GlobalsGuard(None);
+    }
+    let g = L.lock().unwrap_or_else(|e| e.into_inner());
+    GLOBALS_HELD.with(|h| h.set(true));
+    GlobalsGuard(Some(g))
 }
 
 #[cfg(test)]
