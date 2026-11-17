@@ -301,6 +301,12 @@ pub struct Inner {
 pub struct Registry {
     inner: Mutex<Inner>,
     cv: Condvar,
+    /// `live.log` of every unfinished record, by child session: `(record id, path)`. A leaf
+    /// lock (nothing else is taken while it is held), so [`live_log`] — called from every
+    /// `append` — never needs `inner`: callers append while holding `inner` (`close_run`,
+    /// `settle` → `submit`) or the kernel's `running` lock (`submit_with`), which deadlocked
+    /// against `settle` (holds `inner`, asks `running`) and against themselves.
+    live: Mutex<HashMap<String, Vec<(String, PathBuf)>>>,
 }
 
 const RETAIN_FINISHED: usize = 200;
@@ -320,7 +326,27 @@ impl Registry {
         let g = self.lock();
         g.order.iter().filter_map(|i| g.recs.get(i).cloned()).collect()
     }
+    fn live(&self) -> MutexGuard<'_, HashMap<String, Vec<(String, PathBuf)>>> {
+        self.live.lock().unwrap_or_else(|p| p.into_inner())
+    }
+    /// The `live.log` of an unfinished sub-agent running in `session`.
+    fn live_path(&self, session: &str) -> Option<PathBuf> {
+        self.live().get(session).and_then(|v| v.first()).map(|(_, p)| p.clone())
+    }
+    /// Record `id` (child `session`) finished or went away: no more `live.log` lines.
+    fn finished(&self, session: &str, id: &str) {
+        let mut l = self.live();
+        if let Some(v) = l.get_mut(session) {
+            v.retain(|(i, _)| i != id);
+            if v.is_empty() {
+                l.remove(session);
+            }
+        }
+    }
     fn insert(&self, r: Rec) {
+        if !r.state.done() {
+            self.live().entry(r.child.clone()).or_default().push((r.id.clone(), r.live_log.clone()));
+        }
         let mut g = self.lock();
         g.order.push(r.id.clone());
         g.recs.insert(r.id.clone(), r);
@@ -511,10 +537,7 @@ fn pid_alive(pid: u32) -> bool {
 
 /// Append a human-readable line to a sub-agent's `live.log` (tail-able while it runs).
 pub fn live_log(rt: &Runtime, session: &str, ev: &Event) {
-    let Some(path) = ({
-        let g = rt.subagents.lock();
-        g.recs.values().find(|r| r.child == session && !r.state.done()).map(|r| r.live_log.clone())
-    }) else {
+    let Some(path) = rt.subagents.live_path(session) else {
         return;
     };
     let ts = crate::util::fmt_time((ev.ts / 1000) as i64, rt.cfg.schedule.utc_offset_minutes);
@@ -1488,6 +1511,7 @@ impl Runtime {
                     // A refused sibling aborts the whole call: nothing half-started stays behind.
                     for p in &prepared {
                         self.subagents.lock().recs.remove(&p.id);
+                        self.subagents.finished(&p.child, &p.id);
                         let _ = self.store.remove(&p.child);
                     }
                     return Err(e);
@@ -1920,6 +1944,9 @@ impl Runtime {
         let independent = self.cfg.delegation.independent_completions;
         let mut g = self.subagents.lock();
         let Some(r) = g.recs.get_mut(id) else { return };
+        if state.done() {
+            self.subagents.finished(&r.child, id);
+        }
         r.state = state;
         r.accepting_steer = false;
         r.entry = Some(entry);
